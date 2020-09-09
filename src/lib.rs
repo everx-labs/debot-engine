@@ -9,7 +9,7 @@ mod dengine;
 mod routines;
 
 pub use crate::dengine::DEngine;
-pub use crate::context::DContext;
+pub use crate::context::{DContext, STATE_EXIT, STATE_ZERO};
 pub use crate::action::DAction;
 pub use crate::browser::BrowserCallbacks;
 
