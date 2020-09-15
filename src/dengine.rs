@@ -65,7 +65,12 @@ impl DEngine {
         }
     }
 
-    pub fn fetch(&mut self) -> Result<Vec<DContext>, String> {
+    pub fn fetch(&mut self) -> Result<(), String> {
+        self.state_machine = self.fetch_state()?;
+        Ok(())
+    }
+
+    fn fetch_state(&mut self) -> Result<Vec<DContext>, String> {
         self.load_state()?;
         let mut result = self.run_get("fetch")?;
         let context_vec: Vec<DContext> = serde_json::from_value(result.output["contexts"].take())
@@ -74,7 +79,7 @@ impl DEngine {
     }
 
     pub fn start(&mut self) -> Result<(), String> {
-        self.state_machine = self.fetch()?;
+        self.state_machine = self.fetch_state()?;
 
         // TODO: do we need to call `start` func?
         //let start_act = DAction::new_with_name("start");
@@ -107,7 +112,13 @@ impl DEngine {
             },
             AcType::RunMethod => {
                 debug!("run_getmethod: {}", a.func_attr().unwrap());
-                self.run_getmethod(&a.func_attr().unwrap(), None, &a.name)?;
+                let args: Option<JsonValue> = if let Some(getter) = a.args_attr() {
+                    let res = self.run_debot(&getter, None)?;
+                    Some(res.into())
+                } else {
+                    None
+                };
+                self.run_getmethod(&a.func_attr().unwrap(), args, &a.name)?;
                 Ok(None)
             },
             AcType::SendMsg => {
@@ -119,13 +130,24 @@ impl DEngine {
                 } else {
                     None
                 };
-                let result = self.run_sendmsg(&a.name, None, keys)?;
+                let args: Option<JsonValue> = if a.misc != /*empty cell*/"te6ccgEBAQEAAgAAAA==" {
+                    Some(json!({ "arg1": a.misc }).into())
+                } else {
+                    None
+                };
+                let result = self.run_sendmsg(&a.name, args, keys)?;
                 self.browser.log(format!("Success.\nResult: {}", result));
                 Ok(None)
             },            
             AcType::Invoke => {
-                // TODO: assign result to "to"
-                // flags are packed into a bitmask to represent optional parameters values
+                debug!("invoke debot: run {}", a.name);
+                let invoke_args = self.run_debot(&a.name, None)?;
+                debug!("{}", invoke_args);
+                let debot_addr = load_ton_address(invoke_args["debot"].as_str().unwrap())?;
+                let debot_action: DAction = serde_json::from_value(invoke_args["action"].clone()).unwrap();
+                debug!("invoke debot: {}, action name: {}", &debot_addr, debot_action.name);
+                self.browser.invoke_debot(debot_addr, debot_action)?;
+                
                 Ok(None)
             },
             AcType::Print => {

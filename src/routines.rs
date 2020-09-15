@@ -58,16 +58,24 @@ pub(super) fn format_arg(params: &serde_json::Value, i: usize) -> String {
     if let Some(arg) = params["param".to_owned() + &idx].as_str() {
         return arg.to_owned();
     }
+    if let Some(arg) = params["str".to_owned() + &idx].as_str() {
+        return String::from_utf8(hex::decode(arg).unwrap_or(vec![])).unwrap_or(String::new());
+    }
     if let Some(arg) = params["number".to_owned() + &idx].as_str() {
         // TODO: need to use big number instead of u64
+        debug!("parsing number{}: {}", idx, arg);
         return format!(
             "{}", u64::from_str_radix(arg.get(2..).unwrap(), 16
         ).unwrap());
     }
     if let Some(arg) = params["utime".to_owned() + &idx].as_str() {
-        let utime = i64::from_str_radix(arg.get(2..).unwrap(), 16).unwrap();
-        let date = Local.timestamp(utime, 0);
-        return date.to_rfc2822();
+        let utime = u32::from_str_radix(arg.get(2..).unwrap(), 16).unwrap();
+        return if utime == 0 {
+            "undefined".to_owned()
+        } else {
+            let date = Local.timestamp(utime as i64, 0);
+            date.to_rfc2822()
+        };
     }
     String::new()
 }
