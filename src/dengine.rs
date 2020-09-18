@@ -277,15 +277,22 @@ impl DEngine {
         let dest = result["dest"].as_str().unwrap();
         let body = result["body"].as_str().unwrap();
 
+        let call_itself = load_ton_address(dest)? == self.addr;
+        let abi: &str = if call_itself {
+            &self.abi
+        } else {
+            self.target_abi.as_ref().unwrap()
+        };
+
         let res = self.ton.contracts.decode_input_message_body(
-            self.target_abi.clone().unwrap().into(),
+            abi.into(),
             &base64::decode(body).unwrap(),
             true,
         ).map_err(|e| format!("failed to decode msg body: {}", e))?;
 
         debug!("calling {} at address {}", res.function, dest);
         debug!("args: {}", res.output);
-        self.call_target(dest, &res.function, res.output.into(), keys)
+        self.call_target(dest, abi, &res.function, res.output.into(), keys)
     }
 
     fn run_getmethod(
@@ -415,11 +422,11 @@ impl DEngine {
     fn call_target(
         &self,
         dest: &str,
+        abi: &str,
         func: &str,
         args: JsonValue,
         keys: Option<Ed25519KeyPair>
     ) -> Result<serde_json::Value, String > {
-        let abi: &str = self.target_abi.as_ref().unwrap();
         let addr = load_ton_address(dest)?;
 
         let msg = self.ton.contracts.create_run_message(
@@ -451,6 +458,7 @@ impl DEngine {
         match name {
             "convertTokens" => routines::convert_string_to_tokens(&self.ton, arg),
             "getBalance" => routines::get_balance(&self.ton, arg),
+            "loadBocFromFile" => routines::load_boc_from_file(&self.ton, arg),
             _ => Err(format!("unknown engine routine: {}", name))?,
         }
     }

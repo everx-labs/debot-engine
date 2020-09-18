@@ -91,8 +91,9 @@ impl DAction {
     }
 
     pub fn sign_by_user(&self) -> bool {
-        let val = self.attr_value("sign").unwrap();
-        val == "by_user"
+        self.attr_value("sign")
+            .map(|s| s == "by_user")
+            .unwrap_or(false)
     }
 
     pub fn format_args(&self) -> Option<String> {

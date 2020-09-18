@@ -79,3 +79,11 @@ pub(super) fn format_arg(params: &serde_json::Value, i: usize) -> String {
     }
     String::new()
 }
+
+pub(super) fn load_boc_from_file(_ton: &TonClient, arg: &str) -> Result<String, String> {
+    debug!("load boc file {}", arg);
+    let boc = std::fs::read(arg)
+        .map_err(|e| format!(r#"failed to read boc file "{}": {}"#, arg, e))?;
+        Ok(base64::encode(&boc))
+
+}
