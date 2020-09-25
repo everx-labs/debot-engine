@@ -3,8 +3,10 @@ use crate::action::{DAction, AcType};
 use crate::browser::BrowserCallbacks;
 use crate::context::{DContext, str_hex_to_utf8, STATE_EXIT, STATE_ZERO};
 use crate::debot_abi::DEBOT_ABI;
-use ton_client_rs::{TonClient, TonError, TonErrorKind, TonAddress, ResultOfLocalRun, JsonValue, Ed25519KeyPair};
+use ton_client_rs::{EncodedMessage, TonClient, TonError, TonErrorKind, 
+    TonAddress, ResultOfLocalRun, JsonValue, Ed25519KeyPair};
 use std::collections::VecDeque;
+use std::io::Cursor;
 
 fn create_client(url: &str) -> Result<TonClient, String> {
     TonClient::new_with_base_url(url)
@@ -183,10 +185,17 @@ impl DEngine {
             let mut instant_switch = true;
             while instant_switch {
                 // TODO: restrict cyclic switches
-                next_ctx = self.state_machine[state_to as usize].clone();
-                self.browser.log(next_ctx.desc.clone());
-                instant_switch = self.execute_instant_actions(&mut next_ctx)?;
-                state_to = self.curr_state;
+                let jump_to_ctx = self.state_machine.iter()
+                    .find(|ctx| ctx.id == state_to);
+                if let Some(ctx) = jump_to_ctx {
+                    next_ctx = ctx.clone();
+                    self.browser.log(next_ctx.desc.clone());
+                    instant_switch = self.execute_instant_actions(&mut next_ctx)?;
+                    state_to = self.curr_state;
+                } else {
+                    self.browser.log(format!("Debot context #{} not found. Exit.", state_to));
+                    instant_switch = false;
+                }
                 debug!("instant_switch = {}, state_to = {}", instant_switch, state_to);
             }
             self.browser.switch(&next_ctx);
@@ -276,6 +285,11 @@ impl DEngine {
         let result = self.run_debot(name, args)?;
         let dest = result["dest"].as_str().unwrap();
         let body = result["body"].as_str().unwrap();
+        let state = result["state"].as_str();
+
+        let state = state.map(|val| {
+            base64::decode(val).map_err(|e| format!("cannot decode state: {}", e))
+        }).transpose()?;
 
         let call_itself = load_ton_address(dest)? == self.addr;
         let abi: &str = if call_itself {
@@ -292,7 +306,7 @@ impl DEngine {
 
         debug!("calling {} at address {}", res.function, dest);
         debug!("args: {}", res.output);
-        self.call_target(dest, abi, &res.function, res.output.into(), keys)
+        self.call_target(dest, abi, &res.function, res.output.into(), keys, state)
     }
 
     fn run_getmethod(
@@ -425,7 +439,8 @@ impl DEngine {
         abi: &str,
         func: &str,
         args: JsonValue,
-        keys: Option<Ed25519KeyPair>
+        keys: Option<Ed25519KeyPair>,
+        state: Option<Vec<u8>>,
     ) -> Result<serde_json::Value, String > {
         let addr = load_ton_address(dest)?;
 
@@ -442,6 +457,8 @@ impl DEngine {
             error!("failed to create message: {}", e);
             format!("failed to create message")
         })?;
+
+        let msg = pack_state(msg, state)?;
 
         self.browser.log(format!("sending message {}", msg.message_id));
         let res = self.ton.contracts.process_message(msg, Some(abi.into()), Some(func), false)
@@ -475,4 +492,21 @@ fn handle_sdk_err(err: TonError) -> String {
         },
         _ => format!("{}", err)
     }
+}
+
+fn pack_state(mut msg: EncodedMessage, state: Option<Vec<u8>>) -> Result<EncodedMessage, String> {
+    if state.is_some() {
+        let mut buff = Cursor::new(state.unwrap());
+        let image = ton_sdk::ContractImage::from_state_init(&mut buff)
+            .map_err(|e| format!("unable to build contract image: {}", e))?;
+        let state_init = image.state_init();
+        let mut raw_msg = ton_sdk::Contract::deserialize_message(&msg.message_body[..])
+            .map_err(|e| format!("cannot deserialize buffer to msg: {}", e))?;
+        raw_msg.set_state_init(state_init);
+        let (msg_bytes, message_id) = ton_sdk::Contract::serialize_message(&raw_msg)
+            .map_err(|e| format!("cannot serialize msg with state: {}", e))?;
+        msg.message_body = msg_bytes;
+        msg.message_id = message_id.to_string();
+    }
+    Ok(msg)
 }
