@@ -4,17 +4,19 @@ use std::fmt::Display;
 use std::str::FromStr;
 
 pub const STATE_ZERO: u8 = 0;
-pub const STATE_EXIT: u8 = 255; 	// get out
+pub const STATE_CURRENT: u8 = 253;
+pub const STATE_PREV: u8 = 254; 	
+pub const STATE_EXIT: u8 = 255;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(Clone)]
 pub struct DContext {
+    #[serde(deserialize_with = "from_0x_hex")]
+    pub id: u8,
     #[serde(deserialize_with = "from_hex_to_utf8_str")]
     pub desc: String,
     pub actions: Vec<DAction>,
-    #[serde(deserialize_with = "from_0x_hex")]
-    pub id: u8
 }
 
 impl DContext {

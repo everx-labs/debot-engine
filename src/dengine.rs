@@ -1,7 +1,7 @@
 use crate::routines;
 use crate::action::{DAction, AcType};
 use crate::browser::BrowserCallbacks;
-use crate::context::{DContext, str_hex_to_utf8, STATE_EXIT, STATE_ZERO};
+use crate::context::{DContext, str_hex_to_utf8, STATE_EXIT, STATE_ZERO, STATE_CURRENT, STATE_PREV};
 use crate::debot_abi::DEBOT_ABI;
 use ton_client_rs::{EncodedMessage, TonClient, TonError, TonErrorKind, 
     TonAddress, ResultOfLocalRun, JsonValue, Ed25519KeyPair};
@@ -83,10 +83,6 @@ impl DEngine {
     pub fn start(&mut self) -> Result<(), String> {
         self.state_machine = self.fetch_state()?;
 
-        // TODO: do we need to call `start` func?
-        //let start_act = DAction::new_with_name("start");
-        //self.run_action(&start_act)?;
-
         self.switch_state(STATE_ZERO)
     }
 
@@ -133,14 +129,14 @@ impl DEngine {
                     None
                 };
                 let args: Option<JsonValue> = if a.misc != /*empty cell*/"te6ccgEBAQEAAgAAAA==" {
-                    Some(json!({ "arg1": a.misc }).into())
+                    Some(json!({ "misc": a.misc }).into())
                 } else {
                     None
                 };
                 let result = self.run_sendmsg(&a.name, args, keys)?;
                 self.browser.log(format!("Success.\nResult: {}", result));
                 Ok(None)
-            },            
+            },
             AcType::Invoke => {
                 debug!("invoke debot: run {}", a.name);
                 let invoke_args = self.run_debot(&a.name, None)?;
@@ -153,11 +149,13 @@ impl DEngine {
                 Ok(None)
             },
             AcType::Print => {
-                let label = if let Some(fargs) = a.format_args() {
-                    let params = self.run_debot(
-                        &fargs,
-                        Some(json!({"arg1": a.misc}).into())
-                    )?;
+                let label = if let Some(args_getter) = a.format_args() {
+                    let args = if a.misc != /*empty cell*/"te6ccgEBAQEAAgAAAA==" {
+                        Some(json!({"misc": a.misc}).into())
+                    } else {
+                        None
+                    };
+                    let params = self.run_debot(&args_getter, args)?;
                     routines::format_string(&a.name, &params)
                 } else {
                     a.name.clone()
@@ -165,32 +163,41 @@ impl DEngine {
                 self.browser.log(label);
                 Ok(None)
             },
-            _ => {
-                self.browser.log("unsupported action type".to_owned());
+            AcType::Goto => {
+                debug!("goto action");
                 Ok(None)
+            },
+            _ => {
+                let err_msg = "unsupported action type".to_owned();
+                self.browser.log(err_msg.clone());
+                Err(err_msg)
             },
         }
     }
 
-    fn switch_state(&mut self, state_to: u8) -> Result<(), String> {
+    fn switch_state(&mut self, mut state_to: u8) -> Result<(), String> {
         debug!("switching to {}", state_to);
+        if state_to == STATE_CURRENT {
+            state_to = self.curr_state;
+        }
+        if state_to == STATE_PREV {
+            state_to = self.prev_state;
+        }
         if state_to == STATE_EXIT {
-            let quit_context = DContext::new(String::new(), vec![], STATE_EXIT as u8);
-            self.browser.switch(&quit_context);
-        } else if state_to != self.curr_state {
-            let mut state_to = state_to;
+            self.browser.switch(STATE_EXIT);
+        } else if state_to != self.curr_state {            
+            let mut instant_switch = true;
             self.prev_state = self.curr_state;
             self.curr_state = state_to;
-            let mut next_ctx = DContext::new_quit();
-            let mut instant_switch = true;
             while instant_switch {
                 // TODO: restrict cyclic switches
                 let jump_to_ctx = self.state_machine.iter()
-                    .find(|ctx| ctx.id == state_to);
+                    .find(|ctx| ctx.id == state_to)
+                    .map(|ctx| ctx.clone());
                 if let Some(ctx) = jump_to_ctx {
-                    next_ctx = ctx.clone();
-                    self.browser.log(next_ctx.desc.clone());
-                    instant_switch = self.execute_instant_actions(&mut next_ctx)?;
+                    self.browser.switch(state_to);
+                    self.browser.log(ctx.desc.clone());
+                    instant_switch = self.enumerate_actions(ctx)?;
                     state_to = self.curr_state;
                 } else {
                     self.browser.log(format!("Debot context #{} not found. Exit.", state_to));
@@ -198,13 +205,11 @@ impl DEngine {
                 }
                 debug!("instant_switch = {}, state_to = {}", instant_switch, state_to);
             }
-            self.browser.switch(&next_ctx);
         }
         Ok(())
     }
 
-    fn execute_instant_actions(&mut self, ctx: &mut DContext) -> Result<bool, String> {
-        let mut result_actions = vec![];
+    fn enumerate_actions(&mut self, ctx: DContext) -> Result<bool, String> {
         // find, execute and remove instant action from context.
         // if instant action returns new actions then execute them and insert into context.
         for action in &ctx.actions {
@@ -212,21 +217,30 @@ impl DEngine {
             sub_actions.push_back(action.clone());
             while let Some(act) = sub_actions.pop_front() {
                 if act.is_instant() {
+                    if act.desc.len() != 0 {
+                        self.browser.log(act.desc.clone());
+                    }
                     self.handle_action(&act)?.and_then(|vec| {
                         vec.iter().for_each(|a| sub_actions.push_back(a.clone()));
                         Some(())
                     });
                     // if instant action wants to switch context then exit and do switch.
-                    if act.to != self.curr_state {
+                    let to = if act.to == STATE_CURRENT {
+                        self.curr_state
+                    } else if act.to == STATE_PREV {
+                        self.prev_state
+                    } else {
+                        act.to
+                    };
+                    if to != self.curr_state {
                         self.curr_state = act.to;
                         return Ok(true);
                     }
                 } else {
-                    result_actions.push(act);
+                    self.browser.show_action(act);
                 }
             }
         }
-        ctx.actions = result_actions;
         Ok(false)
     }
 
@@ -369,7 +383,7 @@ impl DEngine {
 
     fn query_action_args(&self, act: &DAction) -> Result<Option<JsonValue>, String> {
         let args: Option<JsonValue> = if act.misc != /*empty cell*/"te6ccgEBAQEAAgAAAA==" {
-            Some(json!({ "arg1": act.misc }).into())
+            Some(json!({ "misc": act.misc }).into())
         } else {
             let abi_json: serde_json::Value = serde_json::from_str(&self.abi).unwrap();
             let functions = abi_json["functions"].as_array().unwrap();
@@ -379,7 +393,7 @@ impl DEngine {
             let mut args_json = json!({});
             for arg in arguments {
                 let arg_name = arg["name"].as_str().unwrap();
-                let prefix = "enter ".to_owned() + arg_name;
+                let prefix = "".to_owned();
                 let mut value = String::new();
                 self.browser.input(&prefix, &mut value);
                 if arg["type"].as_str().unwrap() == "bytes" {
@@ -416,6 +430,7 @@ impl DEngine {
             (&self.addr, &self.abi)
         };
         let abi: &str = abi;
+        debug!("running {}, addr {}, state = {}", func, &addr, with_state);
         self.ton.contracts.run_local(
             addr,
             if with_state { Some(self.state.clone().into()) } else { None },
@@ -471,13 +486,8 @@ impl DEngine {
         Ok(res)
     }
 
-    fn call_routine(&self, name: &str, arg: &str) -> Result<String, String> {
-        match name {
-            "convertTokens" => routines::convert_string_to_tokens(&self.ton, arg),
-            "getBalance" => routines::get_balance(&self.ton, arg),
-            "loadBocFromFile" => routines::load_boc_from_file(&self.ton, arg),
-            _ => Err(format!("unknown engine routine: {}", name))?,
-        }
+    fn call_routine(&self, name: &str, args: &str) -> Result<String, String> {
+        routines::call_routine(&self.ton, name, args)
     }
 }
 
