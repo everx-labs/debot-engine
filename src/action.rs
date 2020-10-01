@@ -10,6 +10,7 @@ pub enum AcType {
     SendMsg = 3,
     Invoke = 4,
     Print = 5,
+    Goto = 6,
     CallEngine = 10,
     Unknown = 255,
 }
@@ -23,6 +24,7 @@ impl From<u8> for AcType {
             3 => AcType::SendMsg,
             4 => AcType::Invoke,
             5 => AcType::Print,
+            6 => AcType::Goto,
             10 => AcType::CallEngine,
             _ => AcType::Unknown,
         }
@@ -40,8 +42,6 @@ pub struct DAction {
     pub action_type: AcType,
     #[serde(deserialize_with = "from_0x_hex")]
     pub to: u8,
-    #[serde(deserialize_with = "from_0x_hex")]
-    pub id: u8,
     #[serde(deserialize_with = "from_hex_to_utf8_str")]
     pub attrs: String,
     pub misc: String,
@@ -55,20 +55,18 @@ impl DAction {
             name: String::new(),
             action_type: AcType::Empty,
             to: 0,
-            id: 0,
             attrs: String::new(),
             misc: String::new(),
         }
     }
     
     #[allow(dead_code)]
-    pub fn new(desc: String, name: String, action_type: u8, to: u8, id: u8) -> Self {
+    pub fn new(desc: String, name: String, action_type: u8, to: u8) -> Self {
         DAction {
             desc,
             name,
             action_type: action_type.into(),
             to,
-            id,
             attrs: String::new(),
             misc: String::new(),
         }

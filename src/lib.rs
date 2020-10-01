@@ -40,6 +40,10 @@ mod tests {
         fn load_key(&self, _keys: &mut Ed25519KeyPair) {
             println!("load_key");
         }
+        fn invoke_debot(&self, _debot: TonAddress, _action: DAction) -> Result<(), String> {
+            println!("invoke_debot");
+            Ok(())
+        }
 
     }
 

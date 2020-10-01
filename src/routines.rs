@@ -1,6 +1,15 @@
 use chrono::{TimeZone, Local};
 use ton_client_rs::TonClient;
 
+pub fn call_routine(ton: &TonClient, name: &str, arg: &str) -> Result<String, String> {
+    match name {
+        "convertTokens" => convert_string_to_tokens(&ton, arg),
+        "getBalance" => get_balance(&ton, arg),
+        "loadBocFromFile" => load_boc_from_file(&ton, arg),
+        _ => Err(format!("unknown engine routine: {}", name))?,
+    }
+}
+
 pub fn convert_string_to_tokens(_ton: &TonClient, arg: &str) -> Result<String, String> {
     let parts: Vec<&str> = arg.split(".").collect();
     if parts.len() >= 1 && parts.len() <= 2 {
