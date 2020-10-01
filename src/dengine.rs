@@ -417,7 +417,7 @@ impl DEngine {
     }
 
     fn run(
-        &mut self,
+        &self,
         is_target: bool,
         func: &str,
         args: Option<JsonValue>,
@@ -444,7 +444,7 @@ impl DEngine {
         )
         .map_err(|e| {
             error!("{}", e);
-            handle_sdk_err(e)
+            self.handle_sdk_err(e)
         })
     }
 
@@ -479,7 +479,7 @@ impl DEngine {
         let res = self.ton.contracts.process_message(msg, Some(abi.into()), Some(func), false)
             .map_err(|e| {
                 error!("{}", e);
-                handle_sdk_err(e)
+                self.handle_sdk_err(e)
             })
             .map(|res| res.output)?;
 
@@ -489,18 +489,39 @@ impl DEngine {
     fn call_routine(&self, name: &str, args: &str) -> Result<String, String> {
         routines::call_routine(&self.ton, name, args)
     }
-}
 
-fn handle_sdk_err(err: TonError) -> String {
-    match err {
-        TonError(TonErrorKind::InnerSdkError(inn), _) => {
-            if inn.message.contains("Wrong data format") {
-                "invalid parameter".to_owned()
-            } else {
-                inn.message
-            }
-        },
-        _ => format!("{}", err)
+    fn handle_sdk_err(&self, err: TonError) -> String {
+        match err {
+            TonError(TonErrorKind::InnerSdkError(inn), _) => {
+                if inn.message.contains("Wrong data format") {
+                    // when debot's function argument has invalid format
+                    "invalid parameter".to_owned()
+                } else if inn.code == 3025 {
+                    // when debot function throws an exception
+                    if let Some(err) = inn.data["exit_code"].as_i64() {
+                        self.run(
+                            false,
+                            "getErrorDescription",
+                            Some(json!({"error": err}).into()),
+                            true,
+                            false,
+                        ).ok().and_then(|res| {
+                            res.output["desc"].as_str()
+                                .and_then(|hex| {
+                                    hex::decode(&hex).ok()
+                                        .and_then(|vec| String::from_utf8(vec).ok())
+                                })
+                        }).unwrap_or(inn.message)
+                    } else {
+                        inn.message
+                    }
+                } else {
+                    
+                    inn.message
+                }
+            },
+            _ => format!("{}", err)
+        }
     }
 }
 
