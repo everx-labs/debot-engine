@@ -7,14 +7,7 @@ pub const DEBOT_ABI: &'static str = r#"{
 			"inputs": [
 			],
 			"outputs": [
-				{"components":[{"name":"desc","type":"bytes"},{"components":[{"name":"desc","type":"bytes"},{"name":"name","type":"bytes"},{"name":"actionType","type":"uint8"},{"name":"attrs","type":"bytes"},{"name":"to","type":"uint8"},{"name":"id","type":"uint8"},{"name":"misc","type":"cell"}],"name":"actions","type":"tuple[]"},{"name":"id","type":"uint8"}],"name":"contexts","type":"tuple[]"}
-			]
-		},
-		{
-			"name": "start",
-			"inputs": [
-			],
-			"outputs": [
+				{"components":[{"name":"id","type":"uint8"},{"name":"desc","type":"bytes"},{"components":[{"name":"desc","type":"bytes"},{"name":"name","type":"bytes"},{"name":"actionType","type":"uint8"},{"name":"attrs","type":"bytes"},{"name":"to","type":"uint8"},{"name":"misc","type":"cell"}],"name":"actions","type":"tuple[]"}],"name":"contexts","type":"tuple[]"}
 			]
 		},
 		{
@@ -34,16 +27,12 @@ pub const DEBOT_ABI: &'static str = r#"{
 			]
 		},
 		{
-			"name": "exec",
+			"name": "getErrorDescription",
 			"inputs": [
-				{"name":"state","type":"uint8"},
-				{"name":"action","type":"uint8"},
-				{"name":"flags","type":"uint256"},
-				{"name":"argc","type":"uint8"},
-				{"name":"argv","type":"uint256[]"}
+				{"name":"errorCode","type":"uint32"}
 			],
 			"outputs": [
-				{"name":"value0","type":"uint256"}
+				{"name":"desc","type":"bytes"}
 			]
 		},
 		{
@@ -55,22 +44,6 @@ pub const DEBOT_ABI: &'static str = r#"{
 				{"name":"debotAbi","type":"bytes"},
 				{"name":"targetAbi","type":"bytes"},
 				{"name":"targetAddr","type":"address"}
-			]
-		},
-		{
-			"name": "setArgc",
-			"inputs": [
-				{"name":"count","type":"uint8"}
-			],
-			"outputs": [
-			]
-		},
-		{
-			"name": "setArgv",
-			"inputs": [
-				{"name":"params","type":"uint256[]"}
-			],
-			"outputs": [
 			]
 		},
 		{
