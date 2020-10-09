@@ -11,6 +11,8 @@ keywords = ["TON", "DeBot"]
 [dependencies]
 base64 = "0.10.1"
 chrono = "0.4"
+ed25519 = "1.0.1"
+ed25519-dalek = "1.0.0-pre.4"
 hex = "0.3.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

@@ -1,11 +1,19 @@
 use chrono::{TimeZone, Local};
-use ton_client_rs::TonClient;
+use ton_client_rs::{TonClient, Ed25519KeyPair};
+use ed25519_dalek::{Keypair, Signature};
+use ed25519::signature::Signer;
 
-pub fn call_routine(ton: &TonClient, name: &str, arg: &str) -> Result<String, String> {
+pub fn call_routine(
+    ton: &TonClient,
+    name: &str,
+    arg: &str,
+    keypair: Option<Ed25519KeyPair>,
+) -> Result<String, String> {
     match name {
         "convertTokens" => convert_string_to_tokens(&ton, arg),
         "getBalance" => get_balance(&ton, arg),
         "loadBocFromFile" => load_boc_from_file(&ton, arg),
+        "signHash" => sign_hash(arg, keypair.unwrap_or_default()),
         _ => Err(format!("unknown engine routine: {}", name))?,
     }
 }
@@ -95,4 +103,17 @@ pub(super) fn load_boc_from_file(_ton: &TonClient, arg: &str) -> Result<String, 
         .map_err(|e| format!(r#"failed to read boc file "{}": {}"#, arg, e))?;
         Ok(base64::encode(&boc))
 
+}
+
+pub(super) fn sign_hash(arg: &str, keypair: Ed25519KeyPair) -> Result<String, String> {
+    debug!("sign hash {}", arg);
+    let arg_json: serde_json::Value = serde_json::from_str(arg)
+        .map_err(|e| format!("argument is invalid json: {}", e))?;
+    let hash_str = arg_json["hash"].as_str()
+        .ok_or(format!(r#""hash" argument not found"#))?;
+    let hash_str = hash_str.get(2..).ok_or("hash is not an uint256 number".to_owned())?;
+    let hash_vec = hex::decode(hash_str).unwrap();
+    let keypair = Keypair::from_bytes(&keypair.to_bytes()).unwrap();
+    let signature: Signature = keypair.sign(&hash_vec);
+    Ok(hex::encode(&signature.to_bytes()[..]))
 }

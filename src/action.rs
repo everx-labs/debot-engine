@@ -72,6 +72,12 @@ impl DAction {
         }
     }
 
+    pub fn is_engine_call(&self) -> bool {
+        match self.action_type {
+            AcType::CallEngine => true,
+            _ => false,
+        }
+    }
 
     pub fn is_instant(&self) -> bool {
         self.attrs.split(',')
