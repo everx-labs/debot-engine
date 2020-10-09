@@ -220,6 +220,9 @@ impl DEngine {
                     self.browser.log(ctx.desc.clone());
                     instant_switch = self.enumerate_actions(ctx)?;
                     state_to = self.curr_state;
+                } else if state_to == STATE_EXIT {
+                    self.browser.switch(STATE_EXIT);
+                    instant_switch = false;
                 } else {
                     self.browser.log(format!("Debot context #{} not found. Exit.", state_to));
                     instant_switch = false;
