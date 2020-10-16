@@ -90,7 +90,7 @@ impl DEngine {
         self.handle_action(&act)
             .and_then(|_| self.switch_state(act.to))
             .or_else (|e| {
-                self.browser.log(format!("Debot action failed:\n{}. Return to previous state.\n", e));
+                self.browser.log(format!("Action failed: {}. Return to previous state.\n", e));
                 self.switch_state(self.prev_state)
             })
     }
@@ -134,7 +134,10 @@ impl DEngine {
                     None
                 };
                 let result = self.run_sendmsg(&a.name, args, keys)?;
-                self.browser.log(format!("Success.\nResult: {}", result));
+                self.browser.log(format!("Transaction succeeded."));
+                if !result.is_null() {
+                    self.browser.log(format!("Result: {}", result));
+                }
                 Ok(None)
             },
             AcType::Invoke => {
