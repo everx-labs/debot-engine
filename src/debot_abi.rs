@@ -1,6 +1,6 @@
 pub const DEBOT_ABI: &'static str = r#"{
 	"ABI version": 2,
-	"header": ["time", "expire"],
+	"header": ["pubkey", "time", "expire"],
 	"functions": [
 		{
 			"name": "fetch",
@@ -29,7 +29,7 @@ pub const DEBOT_ABI: &'static str = r#"{
 		{
 			"name": "getErrorDescription",
 			"inputs": [
-				{"name":"errorCode","type":"uint32"}
+				{"name":"error","type":"uint32"}
 			],
 			"outputs": [
 				{"name":"desc","type":"bytes"}
@@ -58,5 +58,4 @@ pub const DEBOT_ABI: &'static str = r#"{
 	],
 	"events": [
 	]
-}
-"#;
+}"#;

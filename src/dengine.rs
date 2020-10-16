@@ -90,7 +90,7 @@ impl DEngine {
         self.handle_action(&act)
             .and_then(|_| self.switch_state(act.to))
             .or_else (|e| {
-                self.browser.log(format!("Debot action failed: {}. Return to previous state.\n", e));
+                self.browser.log(format!("Action failed: {}. Return to previous state.\n", e));
                 self.switch_state(self.prev_state)
             })
     }
@@ -134,7 +134,10 @@ impl DEngine {
                     None
                 };
                 let result = self.run_sendmsg(&a.name, args, keys)?;
-                self.browser.log(format!("Success.\nResult: {}", result));
+                self.browser.log(format!("Transaction succeeded."));
+                if !result.is_null() {
+                    self.browser.log(format!("Result: {}", result));
+                }
                 Ok(None)
             },
             AcType::Invoke => {
@@ -149,6 +152,7 @@ impl DEngine {
                 Ok(None)
             },
             AcType::Print => {
+                debug!("print action: {}", a.name);
                 let label = if let Some(args_getter) = a.format_args() {
                     let args = if a.misc != /*empty cell*/"te6ccgEBAQEAAgAAAA==" {
                         Some(json!({"misc": a.misc}).into())
@@ -165,6 +169,26 @@ impl DEngine {
             },
             AcType::Goto => {
                 debug!("goto action");
+                Ok(None)
+            },
+            AcType::CallEngine => {
+                debug!("call engine action: {}", a.name);
+                let args = if let Some(args_getter) = a.args_attr() {
+                    let args = self.run_debot(&args_getter, None)?;
+                    args.to_string()
+                } else {
+                    a.desc.clone()
+                };
+                let keys = if a.sign_by_user() {
+                    let mut keys = Ed25519KeyPair::zero();
+                    self.browser.load_key(&mut keys);
+                    Some(keys)
+                } else {
+                    None
+                };                
+                let res = self.call_routine(&a.name, &args, keys)?;
+                let setter = a.func_attr().ok_or("routine callback is not specified".to_owned())?;
+                self.run_debot(&setter, Some(json!({"arg1": res}).into()))?;
                 Ok(None)
             },
             _ => {
@@ -185,7 +209,7 @@ impl DEngine {
         }
         if state_to == STATE_EXIT {
             self.browser.switch(STATE_EXIT);
-        } else if state_to != self.curr_state {            
+        } else if state_to != self.curr_state {        
             let mut instant_switch = true;
             self.prev_state = self.curr_state;
             self.curr_state = state_to;
@@ -199,6 +223,9 @@ impl DEngine {
                     self.browser.log(ctx.desc.clone());
                     instant_switch = self.enumerate_actions(ctx)?;
                     state_to = self.curr_state;
+                } else if state_to == STATE_EXIT {
+                    self.browser.switch(STATE_EXIT);
+                    instant_switch = false;
                 } else {
                     self.browser.log(format!("Debot context #{} not found. Exit.", state_to));
                     instant_switch = false;
@@ -236,6 +263,8 @@ impl DEngine {
                         self.curr_state = act.to;
                         return Ok(true);
                     }
+                } else if act.is_engine_call() {
+                    self.handle_action(&act)?;
                 } else {
                     self.browser.show_action(act);
                 }
@@ -265,29 +294,7 @@ impl DEngine {
             false => Some(serde_json::from_value(output["actions"].take()).unwrap()),
             true => None,
         };
-
-        if let Some(actions) = action_vec {
-            let mut result_vec = vec![];
-            for act in actions {
-                match act.action_type {
-                    AcType::CallEngine => {
-                        let args = if let Some(args_getter) = act.args_attr() {
-                            let args = self.run_debot(&args_getter, None)?;
-                            args.to_string()
-                        } else {
-                            act.desc.clone()
-                        };
-                        let res = self.call_routine(&act.name, &args)?;
-                        let setter = act.func_attr().unwrap();
-                        self.run_debot(&setter, Some(json!({"arg1": res}).into()))?;
-                    },
-                    _ => result_vec.push(act),
-                }
-            }
-            Ok(Some(result_vec))
-        } else {
-            Ok(None)
-        }
+        Ok(action_vec)
     }
 
     fn run_sendmsg(
@@ -486,8 +493,13 @@ impl DEngine {
         Ok(res)
     }
 
-    fn call_routine(&self, name: &str, args: &str) -> Result<String, String> {
-        routines::call_routine(&self.ton, name, args)
+    fn call_routine(
+        &self,
+        name: &str,
+        args: &str,
+        keypair: Option<Ed25519KeyPair>
+    ) -> Result<String, String> {
+        routines::call_routine(&self.ton, name, args, keypair)
     }
 
     fn handle_sdk_err(&self, err: TonError) -> String {
