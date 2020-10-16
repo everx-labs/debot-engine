@@ -3,14 +3,25 @@ use crate::action::{DAction, AcType};
 use crate::browser::BrowserCallbacks;
 use crate::context::{DContext, str_hex_to_utf8, STATE_EXIT, STATE_ZERO, STATE_CURRENT, STATE_PREV};
 use crate::debot_abi::DEBOT_ABI;
-use ton_client_rs::{EncodedMessage, TonClient, TonError, TonErrorKind, 
-    TonAddress, ResultOfLocalRun, JsonValue, Ed25519KeyPair};
+use std::sync::Arc;
+//use ton_client_rs::{EncodedMessage, TonClient, TonError, TonErrorKind, TonAddress, ResultOfLocalRun, JsonValue, Ed25519KeyPair};
 use std::collections::VecDeque;
 use std::io::Cursor;
+use ton_client::{ClientConfig, ClientContext};
+
+type TonClient = Arc<ClientContext>;
 
 fn create_client(url: &str) -> Result<TonClient, String> {
-    TonClient::new_with_base_url(url)
-        .map_err(|e| format!("failed to create tonclient: {}", e.to_string()))
+    let conf = ClientConfig {
+        abi: None,
+        crypto: None,
+        network: Some(ton_client::net::NetworkConfig {
+            server_address: url.to_owned(),
+            ..Default::default()
+        }),
+    };
+    let cli = ClientContext::new(Some(conf)).map_err(|e| format!("failed to create tonclient: {}", e))?;
+    Ok(Arc::new(cli))
 }
 
 pub fn load_ton_address(addr: &str) -> Result<TonAddress, String> {
