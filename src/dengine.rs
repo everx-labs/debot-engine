@@ -8,8 +8,13 @@ use std::sync::Arc;
 use std::collections::VecDeque;
 use std::io::Cursor;
 use ton_client::{ClientConfig, ClientContext};
+use ton_client::tvm::{ParamsOfExecuteMessage, ParamsOfExecuteGet, ExecutionMode};
+use ton_client::processing::{MessageSource};
+use ton_client::abi::{Abi, CallSet, ParamsOfEncodeMessage};
 
 type TonClient = Arc<ClientContext>;
+type JsonValue = serde_json::Value;
+type TonAddress = String;
 
 fn create_client(url: &str) -> Result<TonClient, String> {
     let conf = ClientConfig {
@@ -24,12 +29,25 @@ fn create_client(url: &str) -> Result<TonClient, String> {
     Ok(Arc::new(cli))
 }
 
-pub fn load_ton_address(addr: &str) -> Result<TonAddress, String> {
-    TonAddress::from_str(addr)
-        .map_err(|e| format!("failed to parse address: {}", e.to_string()))
+struct RunOutput {
+    output: Option<JsonValue>,
+    msgs: Vec<JsonValue>,
+    state: String,
 }
 
-pub type DState = serde_json::Value;
+impl RunOutput {
+    pub fn new(state: String, msgs: Vec<JsonValue>, output: Option<JsonValue>) -> Self {
+        RunOutput {
+            state, msgs, output
+        }
+    }
+}
+
+pub fn load_ton_address(addr: &str) -> Result<TonAddress, String> {
+    Ok(addr.to_owned())
+}
+
+pub type DState = JsonValue;
 
 const OPTION_ABI: u8 = 1;
 const OPTION_TARGET_ABI: u8 = 2;
@@ -39,7 +57,7 @@ pub struct DEngine {
     abi: String,
     addr: TonAddress,
     ton: TonClient,
-    state: DState,
+    state: String,
     state_machine: Vec<DContext>,
     curr_state: u8,
     prev_state: u8,
@@ -85,8 +103,8 @@ impl DEngine {
 
     fn fetch_state(&mut self) -> Result<Vec<DContext>, String> {
         self.load_state()?;
-        let mut result = self.run_get("fetch")?;
-        let context_vec: Vec<DContext> = serde_json::from_value(result.output["contexts"].take())
+        let mut result = self.run_get("fetch", None)?;
+        let context_vec: Vec<DContext> = serde_json::from_value(result["contexts"].take())
             .unwrap();
         Ok(context_vec)
     }
@@ -284,12 +302,21 @@ impl DEngine {
         Ok(false)
     }
 
-    fn run_get(&mut self, name: &str) -> Result<ResultOfLocalRun, String> {
-        let res = self.run(false, name, None, true, false)?;
-        Ok(res)
+    fn run_get(&mut self, name: &str, params: Option<JsonValue>) -> Result<JsonValue, String> {
+        ton_client::tvm::execute_get(
+            self.ton.clone(),
+            ParamsOfExecuteGet {
+                account: self.state,
+                function_name: name,
+                input: params,
+                execution_options: None,
+            },
+        )
+        .map_err(|e| format!("{}", e))
+        .map(|res| res.output)
     }
 
-    fn run_debot(&mut self, name: &str, args: Option<JsonValue>) -> Result<serde_json::Value, String> {
+    fn run_debot(&mut self, name: &str, args: Option<JsonValue>) -> Result<JsonValue, String> {
         debug!("run_debot {}, args: {}", name, if args.is_some() { args.clone().unwrap() } else { json!({}).into() });
         let res = self.run(false, name, args, true, true)?;
         self.state = res.account.unwrap();
@@ -313,7 +340,7 @@ impl DEngine {
         name: &str,
         args: Option<JsonValue>,
         keys: Option<Ed25519KeyPair>,
-    ) -> Result<serde_json::Value, String> {
+    ) -> Result<JsonValue, String> {
         let result = self.run_debot(name, args)?;
         let dest = result["dest"].as_str().unwrap();
         let body = result["body"].as_str().unwrap();
@@ -346,7 +373,7 @@ impl DEngine {
         getmethod: &str,
         args: Option<JsonValue>,
         result_handler: &str,
-    ) -> Result<serde_json::Value, String> {
+    ) -> Result<JsonValue, String> {
         self.update_options()?;
         let result = self.run(true, getmethod, args, false, false)?;
         self.run_debot(result_handler, Some(result.output.into()))
@@ -354,46 +381,60 @@ impl DEngine {
 
     #[allow(dead_code)]
     pub fn version(&mut self) -> Result<String, String> {
-        self.run_get("getVersion").map(|res| res.output.to_string())
+        self.run_get("getVersion", None).map(|res| res.to_string())
     }
 
-    fn load_state(&mut self) -> Result<String, String> {
-        let result = self.run(false, "getVersion", None, false, true)?;
-        let name_hex = result.output["name"]
-            .as_str()
-            .unwrap();
-        let ver_str = result.output["semver"]
-            .as_str()
-            .unwrap()
-            .trim_start_matches("0x");
+    fn load_state(&mut self) -> Result<(), String> {
+        let account_request = ton_client::net::query_collection(
+            self.ton.clone(), 
+            ton_client::net::ParamsOfQueryCollection {
+                collection: "accounts".to_owned(),
+                filter: Some(serde_json::json!({
+                    "id": { "eq": self.addr.addr }
+                })),
+                result: "boc".to_owned(),
+                limit: Some(1),
+                order: None,
+            },
+        ).await;
+        let acc = account_request.map_err(|e| format!("failed to query debot account: {}", e))?;
+        if acc.result.is_empty() {
+            return Err("Debot with this address is not found in blockchain".to_owned());
+        }
+        self.state = acc.result[0]["boc"].as_str().to_owned();
+
+        let result = self.run_get("getVersion", None)?;
+        let name_hex = result["name"].as_str().unwrap();
+        let ver_str = result["semver"].as_str().unwrap().trim_start_matches("0x");
         let name = str_hex_to_utf8(name_hex).unwrap();
         let ver = u32::from_str_radix(ver_str, 16).unwrap();
         
-        self.state = result.account.unwrap();
-        self.browser.log(format!("{}, version {}.{}.{}", name, ( ver >> 16) as u8, ( ver >> 8) as u8, ver as u8));
+        self.browser.log(
+            format!("{}, version {}.{}.{}", name, ( ver >> 16) as u8, ( ver >> 8) as u8, ver as u8)
+        );
         self.update_options()?;
-        Ok(result.output.to_string())
+        Ok(())
     }
 
     fn update_options(&mut self) -> Result<(), String> {
-        let params = self.run_get("getDebotOptions")?;
-        let opt_str = params.output["options"].as_str().unwrap();
+        let params = self.run_get("getDebotOptions", None)?;
+        let opt_str = params["options"].as_str().unwrap();
         let options = u8::from_str_radix(
             opt_str.trim_start_matches("0x"),
             16,
         ).unwrap();
         if options & OPTION_ABI != 0 {
             self.abi = str_hex_to_utf8(
-                params.output["debotAbi"].as_str().unwrap()
+                params["debotAbi"].as_str().unwrap()
             ).ok_or("cannot convert hex string to debot abi")?;
         }
         if options & OPTION_TARGET_ABI != 0 {
             self.target_abi = str_hex_to_utf8(
-                params.output["targetAbi"].as_str().unwrap()
+                params["targetAbi"].as_str().unwrap()
             );
         }
         if (options & OPTION_TARGET_ADDR) != 0 {
-            let addr = params.output["targetAddr"].as_str().unwrap();
+            let addr = params["targetAddr"].as_str().unwrap();
             self.target_addr = Some(load_ton_address(addr)?);
         }
         Ok(())
@@ -403,7 +444,7 @@ impl DEngine {
         let args: Option<JsonValue> = if act.misc != /*empty cell*/"te6ccgEBAQEAAgAAAA==" {
             Some(json!({ "misc": act.misc }).into())
         } else {
-            let abi_json: serde_json::Value = serde_json::from_str(&self.abi).unwrap();
+            let abi_json: JsonValue = serde_json::from_str(&self.abi).unwrap();
             let functions = abi_json["functions"].as_array().unwrap();
             let func = functions.iter().find(|f| f["name"].as_str().unwrap() == act.name)
                 .ok_or(format!("action not found"))?;
@@ -441,7 +482,7 @@ impl DEngine {
         args: Option<JsonValue>,
         with_state: bool,
         emulate_real_txn: bool
-    ) -> Result<ResultOfLocalRun, String> {
+    ) -> Result<RunOutput, String> {
         let (addr, abi) = if is_target {
             self.get_target()?
         } else {
@@ -449,20 +490,40 @@ impl DEngine {
         };
         let abi: &str = abi;
         debug!("running {}, addr {}, state = {}", func, &addr, with_state);
-        self.ton.contracts.run_local(
-            addr,
-            if with_state { Some(self.state.clone().into()) } else { None },
-            abi.into(),
-            func,
-            None,
-            args.unwrap_or(json!({}).into()),
-            None,
-            None,
-            emulate_real_txn
+        let message = MessageSource::EncodingParams({
+            ParamsOfEncodeMessage {
+                abi: Abi::Serialized(serde_json::from_str(abi).unwrap()),
+                address: addr.clone(),
+                deploy_set: None,
+                call_set: if args.is_none() { 
+                    CallSet::some_with_function(func)
+                } else { 
+                    CallSet::some_with_function_and_input(func, args.unwrap()) 
+                },
+                signer: None,
+                processing_try_index: None,
+            }
+        });
+
+        ton_client::tvm::execute_message(
+            self.ton.clone(),
+            ParamsOfExecuteMessage {
+                account: self.state,
+                message: message,
+                mode: ExecutionMode::TvmOnly,
+                execution_options: None,
+            }
         )
         .map_err(|e| {
             error!("{}", e);
             self.handle_sdk_err(e)
+        })
+        .map(|res| {
+            RunOutput::new(
+                res.account.unwrap()["boc"].as_str().to_owned(),
+                res.out_messages,
+                res.decoded.unwrap().output,
+            )
         })
     }
 
@@ -474,7 +535,7 @@ impl DEngine {
         args: JsonValue,
         keys: Option<Ed25519KeyPair>,
         state: Option<Vec<u8>>,
-    ) -> Result<serde_json::Value, String > {
+    ) -> Result<JsonValue, String > {
         let addr = load_ton_address(dest)?;
 
         let msg = self.ton.contracts.create_run_message(
