@@ -1,5 +1,7 @@
+use super::dengine::TonClient;
 use chrono::{TimeZone, Local};
-use ton_client_rs::{TonClient, Ed25519KeyPair};
+use ton_client::ClientContext;
+use ton_client::crypto::KeyPair;
 use ed25519_dalek::{Keypair, Signature};
 use ed25519::signature::Signer;
 
@@ -7,7 +9,7 @@ pub fn call_routine(
     ton: &TonClient,
     name: &str,
     arg: &str,
-    keypair: Option<Ed25519KeyPair>,
+    keypair: Option<KeyPair>,
 ) -> Result<String, String> {
     match name {
         "convertTokens" => convert_string_to_tokens(&ton, arg),
@@ -105,7 +107,7 @@ pub(super) fn load_boc_from_file(_ton: &TonClient, arg: &str) -> Result<String, 
 
 }
 
-pub(super) fn sign_hash(arg: &str, keypair: Ed25519KeyPair) -> Result<String, String> {
+pub(super) fn sign_hash(arg: &str, keypair: KeyPair) -> Result<String, String> {
     debug!("sign hash {}", arg);
     let arg_json: serde_json::Value = serde_json::from_str(arg)
         .map_err(|e| format!("argument is invalid json: {}", e))?;

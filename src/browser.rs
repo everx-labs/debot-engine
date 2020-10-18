@@ -1,5 +1,6 @@
 use super::action::DAction;
-use ton_client_rs::{Ed25519KeyPair, TonAddress};
+//use ton_client_rs::{Ed25519KeyPair, TonAddress};
+use ton_client::crypto::KeyPair;
 
 pub trait BrowserCallbacks {
     /// Debot sends text message to user.
@@ -11,7 +12,7 @@ pub trait BrowserCallbacks {
     // Debot engine asks user to enter argument for an action. 
     fn input(&self, prefix: &str, value: &mut String);
 
-    fn load_key(&self, keys: &mut Ed25519KeyPair);
+    fn load_key(&self, keys: &mut KeyPair);
 
-    fn invoke_debot(&self, debot: TonAddress, action: DAction) -> Result<(), String>;
+    fn invoke_debot(&self, debot: String, action: DAction) -> Result<(), String>;
 }

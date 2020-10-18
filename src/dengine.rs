@@ -10,9 +10,10 @@ use std::io::Cursor;
 use ton_client::{ClientConfig, ClientContext};
 use ton_client::tvm::{ParamsOfExecuteMessage, ParamsOfExecuteGet, ExecutionMode};
 use ton_client::processing::{MessageSource};
-use ton_client::abi::{Abi, CallSet, ParamsOfEncodeMessage};
+use ton_client::abi::{Abi, CallSet, DeploySet, ParamsOfEncodeMessage, Signer};
+use ton_client::crypto::KeyPair;
 
-type TonClient = Arc<ClientContext>;
+pub type TonClient = Arc<ClientContext>;
 type JsonValue = serde_json::Value;
 type TonAddress = String;
 
@@ -32,13 +33,13 @@ fn create_client(url: &str) -> Result<TonClient, String> {
 struct RunOutput {
     output: Option<JsonValue>,
     msgs: Vec<JsonValue>,
-    state: String,
+    account: String,
 }
 
 impl RunOutput {
-    pub fn new(state: String, msgs: Vec<JsonValue>, output: Option<JsonValue>) -> Self {
+    pub fn new(account: String, msgs: Vec<JsonValue>, output: Option<JsonValue>) -> Self {
         RunOutput {
-            state, msgs, output
+            account, msgs, output
         }
     }
 }
@@ -346,10 +347,6 @@ impl DEngine {
         let body = result["body"].as_str().unwrap();
         let state = result["state"].as_str();
 
-        let state = state.map(|val| {
-            base64::decode(val).map_err(|e| format!("cannot decode state: {}", e))
-        }).transpose()?;
-
         let call_itself = load_ton_address(dest)? == self.addr;
         let abi: &str = if call_itself {
             &self.abi
@@ -533,34 +530,48 @@ impl DEngine {
         abi: &str,
         func: &str,
         args: JsonValue,
-        keys: Option<Ed25519KeyPair>,
-        state: Option<Vec<u8>>,
-    ) -> Result<JsonValue, String > {
+        keys: Option<KeyPair>,
+        state: Option<String>,
+    ) -> Result<Option<JsonValue>, String > {
         let addr = load_ton_address(dest)?;
 
-        let msg = self.ton.contracts.create_run_message(
-            &addr,
-            abi.into(),
-            func,
-            None,
-            args,
-            keys.as_ref(),
-            None,
-        )
+        let abi_obj = Abi::Serialized(serde_json::from_str(abi).unwrap());
+        let msg = ton_client::abi::encode_message(
+            ParamsOfEncodeMessage {
+                abi: abi_obj.clone(),
+                address: Some(addr.to_owned()),
+                deploy_set: state.map(|s| DeploySet::some_with_tvc(s)),
+                call_set: CallSet::some_with_function_and_input(func, args),
+                signer: match keys { 
+                    Some(k) => Signer::Keys({keys: k}),
+                    None => Signer::None,
+                },
+                processing_try_index: None,
+            }
+        ).await
         .map_err(|e| {
             error!("failed to create message: {}", e);
             format!("failed to create message")
         })?;
 
-        let msg = pack_state(msg, state)?;
+        //let msg = pack_state(msg, state)?;
 
         self.browser.log(format!("sending message {}", msg.message_id));
-        let res = self.ton.contracts.process_message(msg, Some(abi.into()), Some(func), false)
-            .map_err(|e| {
+        let res = ton_client::processing::process_message(
+            ParamsOfProcessMessage {
+                message: MessageSource::Encoded {
+                    message: msg.message.clone(),
+                    abi: Some(abi_obj),
+                },
+                send_events: true,
+            },
+            callback,
+        ).await
+        .map_err(|e| {
                 error!("{}", e);
                 self.handle_sdk_err(e)
-            })
-            .map(|res| res.output)?;
+        })
+        .map(|res| res.decoded.unwrap().output)?;
 
         Ok(res)
     }
@@ -609,6 +620,7 @@ impl DEngine {
     }
 }
 
+/*
 fn pack_state(mut msg: EncodedMessage, state: Option<Vec<u8>>) -> Result<EncodedMessage, String> {
     if state.is_some() {
         let mut buff = Cursor::new(state.unwrap());
@@ -625,3 +637,4 @@ fn pack_state(mut msg: EncodedMessage, state: Option<Vec<u8>>) -> Result<Encoded
     }
     Ok(msg)
 }
+*/
