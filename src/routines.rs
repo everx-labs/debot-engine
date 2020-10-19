@@ -7,21 +7,21 @@ use ed25519_dalek::{Keypair, Signature};
 use ed25519::signature::Signer;
 
 pub fn call_routine(
-    ton: &TonClient,
+    ton: TonClient,
     name: &str,
     arg: &str,
     keypair: Option<KeyPair>,
 ) -> Result<String, String> {
     match name {
-        "convertTokens" => convert_string_to_tokens(&ton, arg),
-        "getBalance" => get_balance(&ton, arg),
-        "loadBocFromFile" => load_boc_from_file(&ton, arg),
+        "convertTokens" => convert_string_to_tokens(ton, arg),
+        "getBalance" => get_balance(ton, arg),
+        "loadBocFromFile" => load_boc_from_file(ton, arg),
         "signHash" => sign_hash(ton, arg, keypair.unwrap()),
         _ => Err(format!("unknown engine routine: {}", name))?,
     }
 }
 
-pub fn convert_string_to_tokens(_ton: &TonClient, arg: &str) -> Result<String, String> {
+pub fn convert_string_to_tokens(_ton: TonClient, arg: &str) -> Result<String, String> {
     let parts: Vec<&str> = arg.split(".").collect();
     if parts.len() >= 1 && parts.len() <= 2 {
         let mut result = String::new();
@@ -100,7 +100,7 @@ pub(super) fn format_arg(params: &serde_json::Value, i: usize) -> String {
     String::new()
 }
 
-pub(super) fn load_boc_from_file(_ton: &TonClient, arg: &str) -> Result<String, String> {
+pub(super) fn load_boc_from_file(_ton: TonClient, arg: &str) -> Result<String, String> {
     debug!("load boc file {}", arg);
     let boc = std::fs::read(arg)
         .map_err(|e| format!(r#"failed to read boc file "{}": {}"#, arg, e))?;
@@ -121,7 +121,7 @@ pub(super) fn sign_hash(ton: TonClient, arg: &str, keypair: KeyPair) -> Result<S
     let result = ton_client::crypto::sign(
         ton,
         ParamsOfSign {
-            unsigned: hash_str,
+            unsigned: hash_str.to_owned(),
             keys: keypair,
         },
     ).unwrap();
