@@ -8,10 +8,12 @@ use std::sync::Arc;
 use std::collections::VecDeque;
 use std::io::Cursor;
 use ton_client::{ClientConfig, ClientContext};
-use ton_client::tvm::{ParamsOfExecuteMessage, ParamsOfExecuteGet, ExecutionMode};
-use ton_client::processing::{MessageSource};
 use ton_client::abi::{Abi, CallSet, DeploySet, ParamsOfEncodeMessage, Signer};
 use ton_client::crypto::KeyPair;
+use ton_client::error::ClientError;
+use ton_client::net::{ParamsOfQueryCollection};
+use ton_client::processing::{MessageSource};
+use ton_client::tvm::{ParamsOfExecuteMessage, ParamsOfExecuteGet, ExecutionMode};
 
 pub type TonClient = Arc<ClientContext>;
 type JsonValue = serde_json::Value;
@@ -152,7 +154,7 @@ impl DEngine {
             AcType::SendMsg => {
                 debug!("sendmsg: {}", a.name);
                 let keys = if a.sign_by_user() {
-                    let mut keys = Ed25519KeyPair::zero();
+                    let mut keys;
                     self.browser.load_key(&mut keys);
                     Some(keys)
                 } else {
@@ -210,7 +212,7 @@ impl DEngine {
                     a.desc.clone()
                 };
                 let keys = if a.sign_by_user() {
-                    let mut keys = Ed25519KeyPair::zero();
+                    let mut keys;
                     self.browser.load_key(&mut keys);
                     Some(keys)
                 } else {
@@ -303,7 +305,8 @@ impl DEngine {
         Ok(false)
     }
 
-    fn run_get(&mut self, name: &str, params: Option<JsonValue>) -> Result<JsonValue, String> {
+    fn run_get(&mut self, addr: &str,name: &str, params: Option<JsonValue>) -> Result<JsonValue, String> {
+        //TODO: doqnload state of addr account
         ton_client::tvm::execute_get(
             self.ton.clone(),
             ParamsOfExecuteGet {
@@ -319,7 +322,7 @@ impl DEngine {
 
     fn run_debot(&mut self, name: &str, args: Option<JsonValue>) -> Result<JsonValue, String> {
         debug!("run_debot {}, args: {}", name, if args.is_some() { args.clone().unwrap() } else { json!({}).into() });
-        let res = self.run(false, name, args, true, true)?;
+        let res = self.run(false, name, args)?;
         self.state = res.account.unwrap();
         Ok(res.output)
     }
@@ -372,7 +375,7 @@ impl DEngine {
         result_handler: &str,
     ) -> Result<JsonValue, String> {
         self.update_options()?;
-        let result = self.run(true, getmethod, args, false, false)?;
+        let result = self.run_get(self.target_addr, getmethod, args)?;
         self.run_debot(result_handler, Some(result.output.into()))
     }
 
@@ -477,8 +480,6 @@ impl DEngine {
         is_target: bool,
         func: &str,
         args: Option<JsonValue>,
-        with_state: bool,
-        emulate_real_txn: bool
     ) -> Result<RunOutput, String> {
         let (addr, abi) = if is_target {
             self.get_target()?
@@ -486,7 +487,7 @@ impl DEngine {
             (&self.addr, &self.abi)
         };
         let abi: &str = abi;
-        debug!("running {}, addr {}, state = {}", func, &addr, with_state);
+        debug!("running {}, addr {}", func, &addr);
         let message = MessageSource::EncodingParams({
             ParamsOfEncodeMessage {
                 abi: Abi::Serialized(serde_json::from_str(abi).unwrap()),
@@ -585,37 +586,29 @@ impl DEngine {
         routines::call_routine(&self.ton, name, args, keypair)
     }
 
-    fn handle_sdk_err(&self, err: TonError) -> String {
-        match err {
-            TonError(TonErrorKind::InnerSdkError(inn), _) => {
-                if inn.message.contains("Wrong data format") {
-                    // when debot's function argument has invalid format
-                    "invalid parameter".to_owned()
-                } else if inn.code == 3025 {
-                    // when debot function throws an exception
-                    if let Some(err) = inn.data["exit_code"].as_i64() {
-                        self.run(
-                            false,
-                            "getErrorDescription",
-                            Some(json!({"error": err}).into()),
-                            true,
-                            false,
-                        ).ok().and_then(|res| {
-                            res.output["desc"].as_str()
-                                .and_then(|hex| {
-                                    hex::decode(&hex).ok()
-                                        .and_then(|vec| String::from_utf8(vec).ok())
-                                })
-                        }).unwrap_or(inn.message)
-                    } else {
-                        inn.message
-                    }
-                } else {
-                    
-                    inn.message
-                }
-            },
-            _ => format!("{}", err)
+    fn handle_sdk_err(&self, err: ClientError) -> String {
+        if err.message.contains("Wrong data format") {
+            // when debot's function argument has invalid format
+            "invalid parameter".to_owned()
+        } else if err.code == 3025 {
+            // when debot function throws an exception
+            if let Some(e) = err.data["exit_code"].as_i64() {
+                self.run(
+                    false,
+                    "getErrorDescription",
+                    Some(json!({"error": e}).into()),
+                ).ok().and_then(|res| {
+                    res.output["desc"].as_str()
+                        .and_then(|hex| {
+                            hex::decode(&hex).ok()
+                                .and_then(|vec| String::from_utf8(vec).ok())
+                        })
+                }).unwrap_or(err.message)
+            } else {
+                err.message
+            }
+        } else {
+            err.message
         }
     }
 }
