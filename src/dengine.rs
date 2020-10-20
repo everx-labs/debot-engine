@@ -19,7 +19,7 @@ use ton_client::abi::{
 use ton_client::crypto::KeyPair;
 use ton_client::error::ClientError;
 use ton_client::processing::ParamsOfProcessMessage;
-use ton_client::tvm::{ParamsOfExecuteMessage, ParamsOfExecuteGet, ExecutionMode};
+use ton_client::tvm::{ParamsOfExecuteMessage, ExecutionMode};
 
 pub type TonClient = Arc<ClientContext>;
 type JsonValue = serde_json::Value;
@@ -40,6 +40,7 @@ fn create_client(url: &str) -> Result<TonClient, String> {
 
 struct RunOutput {
     output: Option<JsonValue>,
+    #[allow(dead_code)]
     msgs: Vec<JsonValue>,
     account: String,
 }
@@ -61,7 +62,7 @@ const OPTION_TARGET_ABI: u8 = 2;
 const OPTION_TARGET_ADDR: u8 = 4;
 
 pub struct DEngine {
-    abi: String,
+    abi: Abi,
     addr: TonAddress,
     ton: TonClient,
     state: String,
@@ -90,7 +91,12 @@ impl DEngine {
         browser: Box<dyn BrowserCallbacks>
     ) -> Self {
         DEngine { 
-            abi: abi.unwrap_or(DEBOT_ABI.to_owned()),
+            abi: abi.map(|s| {
+                Abi::Serialized(serde_json::from_str(&s).unwrap())
+            })
+            .unwrap_or(
+                Abi::Serialized(serde_json::from_str(DEBOT_ABI).unwrap())
+            ),
             addr,
             ton,
             state: String::new(),
@@ -109,26 +115,39 @@ impl DEngine {
     }
 
     async fn fetch_state(&mut self) -> Result<Vec<DContext>, String> {
-        self.state = self.load_state(&self.addr).await?;
-        let result = self.run_get(None, "getVersion", None)?;
+        self.state = self.load_state(self.addr.clone()).await?;
+        let result = self.run_debot_get("getVersion", None).await?;
+
         let name_hex = result["name"].as_str().unwrap();
         let ver_str = result["semver"].as_str().unwrap().trim_start_matches("0x");
         let name = str_hex_to_utf8(name_hex).unwrap();
         let ver = u32::from_str_radix(ver_str, 16).unwrap();
         
-        self.browser.log(
-            format!("{}, version {}.{}.{}", name, ( ver >> 16) as u8, ( ver >> 8) as u8, ver as u8)
-        );
+        self.browser.log(format!(
+            "{}, version {}.{}.{}",
+            name,
+            ( ver >> 16) as u8,
+            ( ver >> 8) as u8,
+            ver as u8
+        ));
+
         self.update_options().await?;
-        let mut result = self.run_get(None, "fetch", None)?;
-        let context_vec: Vec<DContext> = serde_json::from_value(result["contexts"].take())
-            .unwrap();
+        let mut result = self.run_debot_get("fetch", None).await?;
+        let context_vec: Vec<DContext> = 
+            serde_json::from_value(result["contexts"].take()).unwrap();
         Ok(context_vec)
     }
 
     pub async fn start(&mut self) -> Result<(), String> {
         self.state_machine = self.fetch_state().await?;
         self.switch_state(STATE_ZERO).await
+    }
+
+    #[allow(dead_code)]
+    pub async fn version(&mut self) -> Result<String, String> {
+        self.run_debot_get("getVersion", None)
+            .await
+            .map(|res| res.to_string())
     }
 
     pub async fn execute_action(&mut self, act: &DAction) -> Result<(), String> {
@@ -322,27 +341,54 @@ impl DEngine {
         Ok(false)
     }
 
-    fn run_get(&self, state: Option<String>, name: &str, params: Option<JsonValue>) -> Result<JsonValue, String> {
-        //TODO: download state of addr account
-        //...
-        ton_client::tvm::execute_get(
-            self.ton.clone(),
-            ParamsOfExecuteGet {
-                account: state.unwrap_or(self.state.clone()),
-                function_name: name.to_string(),
-                input: params,
-                execution_options: None,
-            },
+    async fn run_debot_get(&self, func: &str, args: Option<JsonValue>) -> Result<JsonValue, String> {
+        self.run(
+            self.state.clone(),
+            self.addr.clone(),
+            self.abi.clone(),
+            func,
+            args,
         )
+        .await
+        .map(|res| res.output.unwrap_or(json!({})))
         .map_err(|e| format!("{}", e))
-        .map(|res| res.output)
+    }
+
+    async fn run_get(
+        &self,
+        addr: String,
+        abi: Abi,
+        name: &str,
+        params: Option<JsonValue>,
+    ) -> Result<JsonValue, String> {
+        let state = self.load_state(addr.clone()).await?;
+        match self.run(state, addr, abi, name, params).await {
+            Ok(res) => Ok(res.output.unwrap_or(json!({}))),
+            Err(e) => Err(self.handle_sdk_err(e).await),
+        }
     }
 
     async fn run_debot(&mut self, name: &str, args: Option<JsonValue>) -> Result<Option<JsonValue>, String> {
-        debug!("run_debot {}, args: {}", name, if args.is_some() { args.clone().unwrap() } else { json!({}).into() });
-        let res = self.run(false, name, args).await?;
-        self.state = res.account;
-        Ok(res.output)
+        debug!(
+            "run_debot {}, args: {}",
+            name,
+            if args.is_some() { args.clone().unwrap() } else { json!({}).into() }
+        );
+        match self.run(
+            self.state.clone(),
+            self.addr.clone(),
+            self.abi.clone(),
+            name,
+            args,
+        ).await {
+            Ok(res) => {
+                self.state = res.account;
+                Ok(res.output)
+            },
+            Err(e) => {
+                Err(self.handle_sdk_err(e).await)
+            }
+        }
     }
 
     async fn run_action(&mut self, action: &DAction) -> Result<Option<Vec<DAction>>, String> {
@@ -374,16 +420,17 @@ impl DEngine {
         let state = result["state"].as_str();
 
         let call_itself = load_ton_address(dest)? == self.addr;
-        let abi: &str = if call_itself {
-            &self.abi
+        let abi = if call_itself {
+            self.abi.clone()
         } else {
-            self.target_abi.as_ref().unwrap()
+            let (_, abi) = self.get_target()?;
+            abi
         };
 
         let res = ton_client::abi::decode_message_body(
             self.ton.clone(),
             ParamsOfDecodeMessageBody {
-                abi: Abi::Serialized(serde_json::from_str(abi).unwrap()),
+                abi: abi.clone(),
                 body: body.to_string(),
                 is_internal: true,
             },
@@ -404,17 +451,12 @@ impl DEngine {
         if self.target_addr.is_none() {
             return Err(format!("target address is undefined"));
         }
-        let state = self.load_state(self.target_addr.as_ref().unwrap()).await?;
-        let result = self.run_get(Some(state), getmethod, args)?;
+        let (addr, abi) = self.get_target()?;
+        let result = self.run_get(addr, abi, getmethod, args).await?;
         self.run_debot(result_handler, Some(result)).await
     }
 
-    #[allow(dead_code)]
-    pub fn version(&mut self) -> Result<String, String> {
-        self.run_get(None, "getVersion", None).map(|res| res.to_string())
-    }
-
-    async fn load_state(&self, addr: &str) -> Result<String, String> {
+    async fn load_state(&self, addr: String) -> Result<String, String> {
         let account_request = ton_client::net::query_collection(
             self.ton.clone(), 
             ton_client::net::ParamsOfQueryCollection {
@@ -429,23 +471,24 @@ impl DEngine {
         ).await;
         let acc = account_request.map_err(|e| format!("failed to query debot account: {}", e))?;
         if acc.result.is_empty() {
-            return Err("Debot with this address is not found in blockchain".to_owned());
+            return Err(format!("Cannot find debot with this address {} in blockchain", addr));
         }
         let state = acc.result[0]["boc"].as_str().unwrap().to_owned();
         Ok(state)
     }
 
     async fn update_options(&mut self) -> Result<(), String> {
-        let params = self.run_get(None, "getDebotOptions", None)?;
+        let params = self.run_debot_get("getDebotOptions", None).await?;
         let opt_str = params["options"].as_str().unwrap();
         let options = u8::from_str_radix(
             opt_str.trim_start_matches("0x"),
             16,
         ).unwrap();
         if options & OPTION_ABI != 0 {
-            self.abi = str_hex_to_utf8(
+            let abi_str = str_hex_to_utf8(
                 params["debotAbi"].as_str().unwrap()
             ).ok_or("cannot convert hex string to debot abi")?;
+            self.abi = Abi::Serialized(serde_json::from_str(&abi_str).unwrap());
         }
         if options & OPTION_TARGET_ABI != 0 {
             self.target_abi = str_hex_to_utf8(
@@ -463,7 +506,12 @@ impl DEngine {
         let args: Option<JsonValue> = if act.misc != /*empty cell*/"te6ccgEBAQEAAgAAAA==" {
             Some(json!({ "misc": act.misc }).into())
         } else {
-            let abi_json: JsonValue = serde_json::from_str(&self.abi).unwrap();
+            let empty_json = json!({});
+            let abi_json = if let Abi::Serialized(ref abi_json) = self.abi {
+                abi_json
+            } else {
+                &empty_json
+            };
             let functions = abi_json["functions"].as_array().unwrap();
             let func = functions.iter().find(|f| f["name"].as_str().unwrap() == act.name)
                 .ok_or(format!("action not found"))?;
@@ -484,70 +532,76 @@ impl DEngine {
         Ok(args)
     }
 
-    fn get_target(&self) -> Result<(&TonAddress, &String), String> {
-        let addr = self.target_addr.as_ref().ok_or(
+    fn get_target(&self) -> Result<(TonAddress, Abi), String> {
+        let addr = self.target_addr.clone().ok_or(
             format!("target address is undefined")
         )?;
         let abi = self.target_abi.as_ref().ok_or(
             format!("target abi is undefined")
         )?;
-        Ok((addr, abi))
+        let abi_obj = Abi::Serialized(
+            serde_json::from_str(abi).map_err(|e| format!("cannot parse target abi: {}", e))?
+        );
+        Ok((addr, abi_obj))
     }
 
     async fn run(
         &self,
-        is_target: bool,
+        state: String,
+        addr: String,
+        abi: Abi,
         func: &str,
         args: Option<JsonValue>,
-    ) -> Result<RunOutput, String> {
-        let (addr, abi) = if is_target {
-            self.get_target()?
-        } else {
-            (&self.addr, &self.abi)
-        };
-        let abi: &str = abi;
+    ) -> Result<RunOutput, ClientError> {
         debug!("running {}, addr {}", func, &addr);
+
         let message = MessageSource::EncodingParams({
             ParamsOfEncodeMessage {
-                abi: Abi::Serialized(serde_json::from_str(abi).unwrap()),
-                address: Some(addr.clone()),
+                abi,
+                address: Some(addr),
                 deploy_set: None,
                 call_set: if args.is_none() { 
                     CallSet::some_with_function(func)
                 } else { 
                     CallSet::some_with_function_and_input(func, args.unwrap()) 
                 },
-                signer: Signer::None,
+                signer: Signer::Keys {
+                    keys: KeyPair::new(
+                        "a91d79fe49ab25e5f7ebe9b88226b37ca16f3140a3283736f33973efa5971169".to_string(), 
+                        "958361e7bc4c36553b37b7fab8624d04c627d8cc02e837bd74dca537c3e0ca50".to_string()
+                    )
+                },
                 processing_try_index: None,
             }
         });
 
-        ton_client::tvm::execute_message(
+        match ton_client::tvm::execute_message(
             self.ton.clone(),
             ParamsOfExecuteMessage {
-                account: self.state.clone(),
+                account: state,
                 message: message,
                 mode: ExecutionMode::TvmOnly,
                 execution_options: None,
             }
-        ).await
-        .map_err(|e| {
-            error!("{}", e);
-            self.handle_sdk_err(e)
-        })
-        .map(|res| {
-            RunOutput::new(
-                res.account.unwrap()["boc"].as_str().unwrap().to_owned(),
-                res.out_messages,
-                res.decoded.unwrap().output,
-            )
-        })
+        ).await {
+            Ok(res) => {
+                Ok(RunOutput::new(
+                    res.account.unwrap()["boc"].as_str().unwrap().to_owned(),
+                    res.out_messages,
+                    res.decoded.unwrap().output,
+                ))
+            },
+            Err(e) => {
+                error!("{}", e);
+                Err(e)
+            },
+        }
     }
 
     async fn call_target(
         &self,
         dest: &str,
-        abi: &str,
+        abi: Abi,
         func: &str,
         args: Option<JsonValue>,
         keys: Option<KeyPair>,
@@ -555,12 +609,11 @@ impl DEngine {
     ) -> Result<Option<JsonValue>, String > {
         let addr = load_ton_address(dest)?;
 
-        let abi_obj = Abi::Serialized(serde_json::from_str(abi).unwrap());
         let msg = ton_client::abi::encode_message(
             self.ton.clone(),
             ParamsOfEncodeMessage {
-                abi: abi_obj.clone(),
-                address: Some(addr.to_owned()),
+                abi: abi.clone(),
+                address: Some(addr),
                 deploy_set: state.and_then(|s| DeploySet::some_with_tvc(s.to_string())),
                 call_set: if args.is_none() { 
                     CallSet::some_with_function(func)
@@ -586,24 +639,25 @@ impl DEngine {
         };
 
         self.browser.log(format!("sending message {}", msg.message_id));
-        let res = ton_client::processing::process_message(
+        match ton_client::processing::process_message(
             self.ton.clone(),
             ParamsOfProcessMessage {
                 message: MessageSource::Encoded {
                     message: msg.message.clone(),
-                    abi: Some(abi_obj),
+                    abi: Some(abi),
                 },
                 send_events: true,
             },
             callback,
-        ).await
-        .map_err(|e| {
+        ).await {
+            Ok(res) => {
+                Ok(res.decoded.unwrap().output)
+            },
+            Err(e) => {
                 error!("{}", e);
-                self.handle_sdk_err(e)
-        })
-        .map(|res| res.decoded.unwrap().output)?;
-
-        Ok(res)
+                Err(self.handle_sdk_err(e).await)
+            },
+        }
     }
 
     async fn call_routine(
@@ -615,18 +669,17 @@ impl DEngine {
         routines::call_routine(self.ton.clone(), name, args, keypair).await
     }
 
-    fn handle_sdk_err(&self, err: ClientError) -> String {
+    async fn handle_sdk_err(&self, err: ClientError) -> String {
         if err.message.contains("Wrong data format") {
             // when debot's function argument has invalid format
             "invalid parameter".to_owned()
         } else if err.code == 3025 {
             // when debot function throws an exception
             if let Some(e) = err.data["exit_code"].as_i64() {
-                self.run_get(
-                    None,
+                self.run_debot_get(
                     "getErrorDescription",
                     Some(json!({"error": e})),
-                ).ok().and_then(|res| {
+                ).await.ok().and_then(|res| {
                     res["desc"]
                         .as_str()
                         .and_then(|hex| {
