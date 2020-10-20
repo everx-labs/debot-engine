@@ -1,12 +1,9 @@
 use super::dengine::TonClient;
 use chrono::{TimeZone, Local};
-use ton_client::ClientContext;
-use ton_client::crypto::{ParamsOfSign, KeyPair, ResultOfSign};
+use ton_client::crypto::{ParamsOfSign, KeyPair};
 use ton_client::net::{ParamsOfQueryCollection};
-use ed25519_dalek::{Keypair, Signature};
-use ed25519::signature::Signer;
 
-pub fn call_routine(
+pub async fn call_routine(
     ton: TonClient,
     name: &str,
     arg: &str,
@@ -14,7 +11,7 @@ pub fn call_routine(
 ) -> Result<String, String> {
     match name {
         "convertTokens" => convert_string_to_tokens(ton, arg),
-        "getBalance" => get_balance(ton, arg),
+        "getBalance" => get_balance(ton, arg).await,
         "loadBocFromFile" => load_boc_from_file(ton, arg),
         "signHash" => sign_hash(ton, arg, keypair.unwrap()),
         _ => Err(format!("unknown engine routine: {}", name))?,
@@ -43,7 +40,7 @@ pub fn convert_string_to_tokens(_ton: TonClient, arg: &str) -> Result<String, St
     Err("Invalid amout value".to_string())
 }
 
-pub fn get_balance(ton: TonClient, arg: &str) -> Result<String, String> {
+pub async fn get_balance(ton: TonClient, arg: &str) -> Result<String, String> {
     let arg_json: serde_json::Value =
         serde_json::from_str(arg).map_err(|e| format!("arguments is invalid json: {}", e))?;
     let addr = arg_json["addr"].as_str().ok_or(format!("addr not found"))?;

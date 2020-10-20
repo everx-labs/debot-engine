@@ -6,12 +6,18 @@ use crate::debot_abi::DEBOT_ABI;
 use std::sync::Arc;
 //use ton_client_rs::{EncodedMessage, TonClient, TonError, TonErrorKind, TonAddress, ResultOfLocalRun, JsonValue, Ed25519KeyPair};
 use std::collections::VecDeque;
-use std::io::Cursor;
 use ton_client::{ClientConfig, ClientContext};
-use ton_client::abi::{Abi, MessageSource, CallSet, decode_message, DeploySet, ParamsOfEncodeMessage, ParamsOfDecodeMessageBody, Signer};
+use ton_client::abi::{
+    Abi,
+    MessageSource,
+    CallSet,
+    DeploySet,
+    ParamsOfEncodeMessage,
+    ParamsOfDecodeMessageBody,
+    Signer
+};
 use ton_client::crypto::KeyPair;
 use ton_client::error::ClientError;
-use ton_client::net::{ParamsOfQueryCollection};
 use ton_client::processing::ParamsOfProcessMessage;
 use ton_client::tvm::{ParamsOfExecuteMessage, ParamsOfExecuteGet, ExecutionMode};
 
@@ -49,8 +55,6 @@ impl RunOutput {
 pub fn load_ton_address(addr: &str) -> Result<TonAddress, String> {
     Ok(addr.to_owned())
 }
-
-pub type DState = JsonValue;
 
 const OPTION_ABI: u8 = 1;
 const OPTION_TARGET_ABI: u8 = 2;
@@ -99,35 +103,45 @@ impl DEngine {
         }
     }
 
-    pub fn fetch(&mut self) -> Result<(), String> {
-        self.state_machine = self.fetch_state()?;
+    pub async fn fetch(&mut self) -> Result<(), String> {
+        self.state_machine = self.fetch_state().await?;
         Ok(())
     }
 
-    fn fetch_state(&mut self) -> Result<Vec<DContext>, String> {
-        self.load_state()?;
-        let mut result = self.run_get(&self.addr, "fetch", None)?;
+    async fn fetch_state(&mut self) -> Result<Vec<DContext>, String> {
+        self.state = self.load_state(&self.addr).await?;
+        let result = self.run_get(None, "getVersion", None)?;
+        let name_hex = result["name"].as_str().unwrap();
+        let ver_str = result["semver"].as_str().unwrap().trim_start_matches("0x");
+        let name = str_hex_to_utf8(name_hex).unwrap();
+        let ver = u32::from_str_radix(ver_str, 16).unwrap();
+        
+        self.browser.log(
+            format!("{}, version {}.{}.{}", name, ( ver >> 16) as u8, ( ver >> 8) as u8, ver as u8)
+        );
+        self.update_options().await?;
+        let mut result = self.run_get(None, "fetch", None)?;
         let context_vec: Vec<DContext> = serde_json::from_value(result["contexts"].take())
             .unwrap();
         Ok(context_vec)
     }
 
-    pub fn start(&mut self) -> Result<(), String> {
-        self.state_machine = self.fetch_state()?;
-
-        self.switch_state(STATE_ZERO)
+    pub async fn start(&mut self) -> Result<(), String> {
+        self.state_machine = self.fetch_state().await?;
+        self.switch_state(STATE_ZERO).await
     }
 
-    pub fn execute_action(&mut self, act: &DAction) -> Result<(), String> {
-        self.handle_action(&act)
-            .and_then(|_| self.switch_state(act.to))
-            .or_else (|e| {
+    pub async fn execute_action(&mut self, act: &DAction) -> Result<(), String> {
+        match self.handle_action(&act).await {
+            Ok(_) => self.switch_state(act.to).await,
+            Err(e) => {
                 self.browser.log(format!("Action failed: {}. Return to previous state.\n", e));
-                self.switch_state(self.prev_state)
-            })
+                self.switch_state(self.prev_state).await
+            },
+        }
     }
     
-    fn handle_action(
+    async fn handle_action(
         &mut self,
         a: &DAction,
     ) -> Result<Option<Vec<DAction>>, String> {
@@ -138,22 +152,22 @@ impl DEngine {
             },
             AcType::RunAction => {
                 debug!("run_action: {}", a.name);
-                self.run_action(&a)
+                self.run_action(&a).await
             },
             AcType::RunMethod => {
                 debug!("run_getmethod: {}", a.func_attr().unwrap());
                 let args: Option<JsonValue> = if let Some(getter) = a.args_attr() {
-                    self.run_debot(&getter, None)?
+                    self.run_debot(&getter, None).await?
                 } else {
                     None
                 };
-                self.run_getmethod(&a.func_attr().unwrap(), args, &a.name)?;
+                self.run_getmethod(&a.func_attr().unwrap(), args, &a.name).await?;
                 Ok(None)
             },
             AcType::SendMsg => {
                 debug!("sendmsg: {}", a.name);
                 let keys = if a.sign_by_user() {
-                    let mut keys;
+                    let mut keys = KeyPair::new(String::new(), String::new());
                     self.browser.load_key(&mut keys);
                     Some(keys)
                 } else {
@@ -164,14 +178,14 @@ impl DEngine {
                 } else {
                     None
                 };
-                let result = self.run_sendmsg(&a.name, args, keys)?;
+                let result = self.run_sendmsg(&a.name, args, keys).await?;
                 self.browser.log(format!("Transaction succeeded."));
                 result.map(|r| self.browser.log(format!("Result: {}", r)));
                 Ok(None)
             },
             AcType::Invoke => {
                 debug!("invoke debot: run {}", a.name);
-                let result = self.run_debot(&a.name, None)?;
+                let result = self.run_debot(&a.name, None).await?;
                 let invoke_args = result.ok_or(
                     format!(r#"invalid invoke action "{}": it must return "debot" and "action" arguments"#, a.name)
                 )?;
@@ -191,7 +205,7 @@ impl DEngine {
                     } else {
                         None
                     };
-                    self.run_debot(&args_getter, args)?
+                    self.run_debot(&args_getter, args).await?
                         .map(|p| routines::format_string(&a.name, &p))
                         .unwrap_or_default()
                 } else {
@@ -207,21 +221,22 @@ impl DEngine {
             AcType::CallEngine => {
                 debug!("call engine action: {}", a.name);
                 let args = if let Some(args_getter) = a.args_attr() {
-                    let args = self.run_debot(&args_getter, None)?;
+                    let args = self.run_debot(&args_getter, None).await?;
                     args.map(|v| v.to_string()).unwrap_or_default()
                 } else {
                     a.desc.clone()
                 };
                 let keys = if a.sign_by_user() {
-                    let mut keys;
+                    // TODO: dont' use KeyPair here - send buffer for signing to browser
+                    let mut keys = KeyPair::new(String::new(), String::new());
                     self.browser.load_key(&mut keys);
                     Some(keys)
                 } else {
                     None
                 };                
-                let res = self.call_routine(&a.name, &args, keys)?;
+                let res = self.call_routine(&a.name, &args, keys).await?;
                 let setter = a.func_attr().ok_or("routine callback is not specified".to_owned())?;
-                self.run_debot(&setter, Some(json!({"arg1": res}).into()))?;
+                self.run_debot(&setter, Some(json!({"arg1": res}).into())).await?;
                 Ok(None)
             },
             _ => {
@@ -232,7 +247,7 @@ impl DEngine {
         }
     }
 
-    fn switch_state(&mut self, mut state_to: u8) -> Result<(), String> {
+    async fn switch_state(&mut self, mut state_to: u8) -> Result<(), String> {
         debug!("switching to {}", state_to);
         if state_to == STATE_CURRENT {
             state_to = self.curr_state;
@@ -254,7 +269,7 @@ impl DEngine {
                 if let Some(ctx) = jump_to_ctx {
                     self.browser.switch(state_to);
                     self.browser.log(ctx.desc.clone());
-                    instant_switch = self.enumerate_actions(ctx)?;
+                    instant_switch = self.enumerate_actions(ctx).await?;
                     state_to = self.curr_state;
                 } else if state_to == STATE_EXIT {
                     self.browser.switch(STATE_EXIT);
@@ -269,7 +284,7 @@ impl DEngine {
         Ok(())
     }
 
-    fn enumerate_actions(&mut self, ctx: DContext) -> Result<bool, String> {
+    async fn enumerate_actions(&mut self, ctx: DContext) -> Result<bool, String> {
         // find, execute and remove instant action from context.
         // if instant action returns new actions then execute them and insert into context.
         for action in &ctx.actions {
@@ -280,7 +295,8 @@ impl DEngine {
                     if act.desc.len() != 0 {
                         self.browser.log(act.desc.clone());
                     }
-                    self.handle_action(&act)?.and_then(|vec| {
+                    self.handle_action(&act).await?
+                    .and_then(|vec| {
                         vec.iter().for_each(|a| sub_actions.push_back(a.clone()));
                         Some(())
                     });
@@ -297,7 +313,7 @@ impl DEngine {
                         return Ok(true);
                     }
                 } else if act.is_engine_call() {
-                    self.handle_action(&act)?;
+                    self.handle_action(&act).await?;
                 } else {
                     self.browser.show_action(act);
                 }
@@ -306,12 +322,13 @@ impl DEngine {
         Ok(false)
     }
 
-    fn run_get(&mut self, addr: &str,name: &str, params: Option<JsonValue>) -> Result<JsonValue, String> {
-        //TODO: doqnload state of addr account
+    fn run_get(&self, state: Option<String>, name: &str, params: Option<JsonValue>) -> Result<JsonValue, String> {
+        //TODO: download state of addr account
+        //...
         ton_client::tvm::execute_get(
             self.ton.clone(),
             ParamsOfExecuteGet {
-                account: self.state,
+                account: state.unwrap_or(self.state.clone()),
                 function_name: name.to_string(),
                 input: params,
                 execution_options: None,
@@ -321,33 +338,33 @@ impl DEngine {
         .map(|res| res.output)
     }
 
-    fn run_debot(&mut self, name: &str, args: Option<JsonValue>) -> Result<Option<JsonValue>, String> {
+    async fn run_debot(&mut self, name: &str, args: Option<JsonValue>) -> Result<Option<JsonValue>, String> {
         debug!("run_debot {}, args: {}", name, if args.is_some() { args.clone().unwrap() } else { json!({}).into() });
-        let res = self.run(false, name, args)?;
+        let res = self.run(false, name, args).await?;
         self.state = res.account;
         Ok(res.output)
     }
 
-    fn run_action(&mut self, action: &DAction) -> Result<Option<Vec<DAction>>, String> {
+    async fn run_action(&mut self, action: &DAction) -> Result<Option<Vec<DAction>>, String> {
         let args = self.query_action_args(action)?;
 
-        let mut output = self.run_debot(&action.name, args)?;
+        let output = self.run_debot(&action.name, args).await?;
 
-        let action_vec: Option<Vec<DAction>> = output.map(|out| {
+        let action_vec: Option<Vec<DAction>> = output.map(|mut out| {
             serde_json::from_value(out["actions"].take())
         })
         .transpose()
-        .map_err(|e| format!("internal error: failed to parse actions"))?;
+        .map_err(|_| format!("internal error: failed to parse actions"))?;
         Ok(action_vec)
     }
 
-    fn run_sendmsg(
+    async fn run_sendmsg(
         &mut self,
         name: &str,
         args: Option<JsonValue>,
         keys: Option<KeyPair>,
     ) -> Result<Option<JsonValue>, String> {
-        let result = self.run_debot(name, args)?;
+        let result = self.run_debot(name, args).await?;
         if result.is_none() {
             return Err(format!(r#"action "{}" is invalid: it must return "dest" and "body" arguments"#, name));
         }
@@ -373,36 +390,37 @@ impl DEngine {
         ).map_err(|e| format!("failed to decode msg body: {}", e))?;
 
         debug!("calling {} at address {}", res.name, dest);
-        debug!("args: {}", res.value.unwrap_or(json!({})));
-        self.call_target(dest, abi, &res.name, res.value, keys, state)
+        debug!("args: {}", res.value.as_ref().unwrap_or(&json!({})));
+        self.call_target(dest, abi, &res.name, res.value.clone(), keys, state).await
     }
 
-    fn run_getmethod(
+    async fn run_getmethod(
         &mut self,
         getmethod: &str,
         args: Option<JsonValue>,
         result_handler: &str,
     ) -> Result<Option<JsonValue>, String> {
-        self.update_options()?;
+        self.update_options().await?;
         if self.target_addr.is_none() {
             return Err(format!("target address is undefined"));
         }
-        let result = self.run_get(self.target_addr.as_ref().unwrap(), getmethod, args)?;
-        self.run_debot(result_handler, Some(result))
+        let state = self.load_state(self.target_addr.as_ref().unwrap()).await?;
+        let result = self.run_get(Some(state), getmethod, args)?;
+        self.run_debot(result_handler, Some(result)).await
     }
 
     #[allow(dead_code)]
     pub fn version(&mut self) -> Result<String, String> {
-        self.run_get(&self.addr, "getVersion", None).map(|res| res.to_string())
+        self.run_get(None, "getVersion", None).map(|res| res.to_string())
     }
 
-    fn load_state(&mut self) -> Result<(), String> {
+    async fn load_state(&self, addr: &str) -> Result<String, String> {
         let account_request = ton_client::net::query_collection(
             self.ton.clone(), 
             ton_client::net::ParamsOfQueryCollection {
                 collection: "accounts".to_owned(),
                 filter: Some(serde_json::json!({
-                    "id": { "eq": self.addr }
+                    "id": { "eq": addr }
                 })),
                 result: "boc".to_owned(),
                 limit: Some(1),
@@ -413,23 +431,12 @@ impl DEngine {
         if acc.result.is_empty() {
             return Err("Debot with this address is not found in blockchain".to_owned());
         }
-        self.state = acc.result[0]["boc"].as_str().unwrap().to_owned();
-
-        let result = self.run_get(&self.addr, "getVersion", None)?;
-        let name_hex = result["name"].as_str().unwrap();
-        let ver_str = result["semver"].as_str().unwrap().trim_start_matches("0x");
-        let name = str_hex_to_utf8(name_hex).unwrap();
-        let ver = u32::from_str_radix(ver_str, 16).unwrap();
-        
-        self.browser.log(
-            format!("{}, version {}.{}.{}", name, ( ver >> 16) as u8, ( ver >> 8) as u8, ver as u8)
-        );
-        self.update_options()?;
-        Ok(())
+        let state = acc.result[0]["boc"].as_str().unwrap().to_owned();
+        Ok(state)
     }
 
-    fn update_options(&mut self) -> Result<(), String> {
-        let params = self.run_get(&self.addr, "getDebotOptions", None)?;
+    async fn update_options(&mut self) -> Result<(), String> {
+        let params = self.run_get(None, "getDebotOptions", None)?;
         let opt_str = params["options"].as_str().unwrap();
         let options = u8::from_str_radix(
             opt_str.trim_start_matches("0x"),
@@ -487,7 +494,7 @@ impl DEngine {
         Ok((addr, abi))
     }
 
-    fn run(
+    async fn run(
         &self,
         is_target: bool,
         func: &str,
@@ -518,7 +525,7 @@ impl DEngine {
         ton_client::tvm::execute_message(
             self.ton.clone(),
             ParamsOfExecuteMessage {
-                account: self.state,
+                account: self.state.clone(),
                 message: message,
                 mode: ExecutionMode::TvmOnly,
                 execution_options: None,
@@ -537,7 +544,7 @@ impl DEngine {
         })
     }
 
-    fn call_target(
+    async fn call_target(
         &self,
         dest: &str,
         abi: &str,
@@ -599,13 +606,13 @@ impl DEngine {
         Ok(res)
     }
 
-    fn call_routine(
+    async fn call_routine(
         &self,
         name: &str,
         args: &str,
         keypair: Option<KeyPair>
     ) -> Result<String, String> {
-        routines::call_routine(self.ton.clone(), name, args, keypair)
+        routines::call_routine(self.ton.clone(), name, args, keypair).await
     }
 
     fn handle_sdk_err(&self, err: ClientError) -> String {
@@ -615,12 +622,12 @@ impl DEngine {
         } else if err.code == 3025 {
             // when debot function throws an exception
             if let Some(e) = err.data["exit_code"].as_i64() {
-                self.run(
-                    false,
+                self.run_get(
+                    None,
                     "getErrorDescription",
-                    Some(json!({"error": e}).into()),
+                    Some(json!({"error": e})),
                 ).ok().and_then(|res| {
-                    res.output.unwrap_or(json!({}))["desc"]
+                    res["desc"]
                         .as_str()
                         .and_then(|hex| {
                             hex::decode(&hex).ok().and_then(|vec| String::from_utf8(vec).ok())
