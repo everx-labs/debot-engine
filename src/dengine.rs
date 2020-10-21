@@ -565,12 +565,7 @@ impl DEngine {
                 } else { 
                     CallSet::some_with_function_and_input(func, args.unwrap()) 
                 },
-                signer: Signer::Keys {
-                    keys: KeyPair::new(
-                        "a91d79fe49ab25e5f7ebe9b88226b37ca16f3140a3283736f33973efa5971169".to_string(), 
-                        "958361e7bc4c36553b37b7fab8624d04c627d8cc02e837bd74dca537c3e0ca50".to_string()
-                    )
-                },
+                signer: Signer::None,
                 processing_try_index: None,
             }
         });
