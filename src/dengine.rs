@@ -347,7 +347,8 @@ impl DEngine {
     }
 
     fn load_state(&mut self) -> Result<String, String> {
-        let result = self.run(false, "getVersion", None, false, true)?;
+        let result = self.run(false, "getVersion", None, false, true)
+            .map_err(|e| format!("failed to fetch debot state: {}", e))?;
         let name_hex = result.output["name"]
             .as_str()
             .unwrap();
