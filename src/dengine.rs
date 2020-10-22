@@ -63,7 +63,7 @@ const OPTION_TARGET_ADDR: u8 = 4;
 
 pub struct DEngine {
     abi: Abi,
-    addr: TonAddress,
+    addr: String,
     ton: TonClient,
     state: String,
     state_machine: Vec<DContext>,
@@ -76,7 +76,7 @@ pub struct DEngine {
 
 impl DEngine {
     pub fn new(
-        addr: TonAddress,
+        addr: String,
         abi: Option<String>,
         url: &str,
         browser: Box<dyn BrowserCallbacks>,
@@ -85,7 +85,7 @@ impl DEngine {
     }
 
     pub fn new_with_client(
-        addr: TonAddress,
+        addr: String,
         abi: Option<String>,
         ton: TonClient,
         browser: Box<dyn BrowserCallbacks>
