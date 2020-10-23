@@ -1,5 +1,4 @@
 use super::action::DAction;
-//use ton_client_rs::{Ed25519KeyPair, TonAddress};
 use ton_client::crypto::KeyPair;
 
 pub trait BrowserCallbacks {

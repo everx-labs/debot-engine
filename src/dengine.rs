@@ -4,7 +4,6 @@ use crate::browser::BrowserCallbacks;
 use crate::context::{DContext, str_hex_to_utf8, STATE_EXIT, STATE_ZERO, STATE_CURRENT, STATE_PREV};
 use crate::debot_abi::DEBOT_ABI;
 use std::sync::Arc;
-//use ton_client_rs::{EncodedMessage, TonClient, TonError, TonErrorKind, TonAddress, ResultOfLocalRun, JsonValue, Ed25519KeyPair};
 use std::collections::VecDeque;
 use ton_client::{ClientConfig, ClientContext};
 use ton_client::abi::{
@@ -23,7 +22,6 @@ use ton_client::tvm::{ParamsOfExecuteMessage, ExecutionMode};
 
 pub type TonClient = Arc<ClientContext>;
 type JsonValue = serde_json::Value;
-type TonAddress = String;
 
 fn create_client(url: &str) -> Result<TonClient, String> {
     let conf = ClientConfig {
@@ -53,7 +51,8 @@ impl RunOutput {
     }
 }
 
-pub fn load_ton_address(addr: &str) -> Result<TonAddress, String> {
+// TODO: implement address validation
+pub fn load_ton_address(addr: &str) -> Result<String, String> {
     Ok(addr.to_owned())
 }
 
@@ -69,7 +68,7 @@ pub struct DEngine {
     state_machine: Vec<DContext>,
     curr_state: u8,
     prev_state: u8,
-    target_addr: Option<TonAddress>,
+    target_addr: Option<String>,
     target_abi: Option<String>,
     browser: Box<dyn BrowserCallbacks>,
 }
@@ -532,7 +531,7 @@ impl DEngine {
         Ok(args)
     }
 
-    fn get_target(&self) -> Result<(TonAddress, Abi), String> {
+    fn get_target(&self) -> Result<(String, Abi), String> {
         let addr = self.target_addr.clone().ok_or(
             format!("target address is undefined")
         )?;

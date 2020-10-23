@@ -112,9 +112,6 @@ pub(super) fn sign_hash(ton: TonClient, arg: &str, keypair: KeyPair) -> Result<S
     let hash_str = arg_json["hash"].as_str()
         .ok_or(format!(r#""hash" argument not found"#))?;
     let hash_str = hash_str.get(2..).ok_or("hash is not an uint256 number".to_owned())?;
-    //let hash_vec = hex::decode(hash_str).unwrap();
-    //let keypair = Keypair::from_bytes(&keypair.to_bytes()).unwrap();
-    //let signature: Signature = keypair.sign(&hash_vec);
     let result = ton_client::crypto::sign(
         ton,
         ParamsOfSign {
@@ -122,5 +119,5 @@ pub(super) fn sign_hash(ton: TonClient, arg: &str, keypair: KeyPair) -> Result<S
             keys: keypair,
         },
     ).unwrap();
-    Ok(/*hex::encode(&signature.to_bytes()[..])*/result.signed)
+    Ok(result.signed)
 }
