@@ -11,6 +11,7 @@ impl TestBrowser {
 }
 
 struct TestCallbacks {
+    #[allow(dead_code)]
     browser: Arc<RefCell<TestBrowser>>,
 } 
 

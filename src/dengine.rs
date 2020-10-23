@@ -13,12 +13,13 @@ use ton_client::abi::{
     DeploySet,
     ParamsOfEncodeMessage,
     ParamsOfDecodeMessageBody,
-    Signer
+    Signer,
+    encode_message
 };
 use ton_client::crypto::KeyPair;
 use ton_client::error::ClientError;
 use ton_client::processing::ParamsOfProcessMessage;
-use ton_client::tvm::{ParamsOfExecuteMessage, ExecutionMode};
+use ton_client::tvm::ParamsOfRunTvm;
 
 pub type TonClient = Arc<ClientContext>;
 type JsonValue = serde_json::Value;
@@ -39,12 +40,12 @@ fn create_client(url: &str) -> Result<TonClient, String> {
 struct RunOutput {
     output: Option<JsonValue>,
     #[allow(dead_code)]
-    msgs: Vec<JsonValue>,
+    msgs: Vec<String>,
     account: String,
 }
 
 impl RunOutput {
-    pub fn new(account: String, msgs: Vec<JsonValue>, output: Option<JsonValue>) -> Self {
+    pub fn new(account: String, msgs: Vec<String>, output: Option<JsonValue>) -> Self {
         RunOutput {
             account, msgs, output
         }
@@ -554,33 +555,33 @@ impl DEngine {
     ) -> Result<RunOutput, ClientError> {
         debug!("running {}, addr {}", func, &addr);
 
-        let message = MessageSource::EncodingParams({
-            ParamsOfEncodeMessage {
-                abi,
-                address: Some(addr),
-                deploy_set: None,
-                call_set: if args.is_none() { 
-                    CallSet::some_with_function(func)
-                } else { 
-                    CallSet::some_with_function_and_input(func, args.unwrap()) 
-                },
-                signer: Signer::None,
-                processing_try_index: None,
-            }
-        });
+        let msg_params = ParamsOfEncodeMessage {
+            abi: abi.clone(),
+            address: Some(addr),
+            deploy_set: None,
+            call_set: if args.is_none() { 
+                CallSet::some_with_function(func)
+            } else { 
+                CallSet::some_with_function_and_input(func, args.unwrap()) 
+            },
+            signer: Signer::None,
+            processing_try_index: None,
+        };
 
-        match ton_client::tvm::execute_message(
+        let result = encode_message(self.ton.clone(), msg_params).await?;
+
+        match ton_client::tvm::run_tvm(
             self.ton.clone(),
-            ParamsOfExecuteMessage {
+            ParamsOfRunTvm {
                 account: state,
-                message: message,
-                mode: ExecutionMode::TvmOnly,
+                message: result.message,
+                abi: Some(abi),
                 execution_options: None,
             }
         ).await {
             Ok(res) => {
                 Ok(RunOutput::new(
-                    res.account.unwrap()["boc"].as_str().unwrap().to_owned(),
+                    res.account,
                     res.out_messages,
                     res.decoded.unwrap().output,
                 ))
