@@ -26,5 +26,7 @@ Run debots in tonos-cli with the following command:
 
 ## Related Links
 
-[TON OS docs](https://docs.ton.dev/)
+- [TON OS docs](https://docs.ton.dev/)
+
+- [DeBot smart contract examples](https://github.com/tonlabs/ton-labs-contracts/tree/master/solidity/debots)
 
