@@ -2,6 +2,8 @@ use chrono::{TimeZone, Local};
 use ton_client_rs::{TonClient, Ed25519KeyPair};
 use ed25519_dalek::{Keypair, Signature};
 use ed25519::signature::Signer;
+use num_bigint::BigUint;
+use num_traits::Num;
 
 pub fn call_routine(
     ton: &TonClient,
@@ -105,15 +107,86 @@ pub(super) fn load_boc_from_file(_ton: &TonClient, arg: &str) -> Result<String, 
 
 }
 
-pub(super) fn sign_hash(arg: &str, keypair: Ed25519KeyPair) -> Result<String, String> {
-    debug!("sign hash {}", arg);
+fn extract_hash(arg: &str) -> Result<Vec<u8>, String> {
     let arg_json: serde_json::Value = serde_json::from_str(arg)
         .map_err(|e| format!("argument is invalid json: {}", e))?;
-    let hash_str = arg_json["hash"].as_str()
+    let mut hash_str = arg_json["hash"].as_str()
         .ok_or(format!(r#""hash" argument not found"#))?;
-    let hash_str = hash_str.get(2..).ok_or("hash is not an uint256 number".to_owned())?;
-    let hash_vec = hex::decode(hash_str).unwrap();
+    if hash_str.starts_with("0x") {
+        hash_str = hash_str.get(2..)
+            .ok_or("hash is not an uint256 number".to_owned())?;
+    }
+    let hash_int = BigUint::from_str_radix(hash_str, 16)
+        .map_err(|_| "hash is not an uint256 number".to_owned())?;
+    hex::decode(&format!("{:0>64}", hash_int.to_str_radix(16)))
+        .map_err(|e| {
+            format!("failed to decode hash from hex string:\n hash: {}\n error: {}", hash_str, e)
+        })
+}
+
+pub(super) fn sign_hash(arg: &str, keypair: Ed25519KeyPair) -> Result<String, String> {
+    debug!("sign hash {}", arg);
+    let hash_vec = extract_hash(arg)?;
     let keypair = Keypair::from_bytes(&keypair.to_bytes()).unwrap();
     let signature: Signature = keypair.sign(&hash_vec);
     Ok(hex::encode(&signature.to_bytes()[..]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hex;
+
+    fn get_keypair() -> Ed25519KeyPair {
+        let keys_str = r#"{
+            "public": "9711a04f0b19474272bc7bae5472a8fbbb6ef71ce9c193f5ec3f5af808069a41",
+            "secret": "cdf2a820517fa783b9b6094d15e650af92d485084ab217fc2c859f02d49623f3"
+        }"#;
+        serde_json::from_str(&keys_str).unwrap()
+    }
+
+    #[test]
+    fn test_sign_hash_1() {
+        let hash = "0x432461b752243bba76ad56fe14f88d2d0bb224c68f1c598dd3a34ee3204ddc84";
+        let arg = json!({ "hash": hash }).to_string();
+        sign_hash(&arg, get_keypair()).unwrap();
+    }
+
+    #[test]
+    fn test_sign_hash_2() {
+        let hash2 = "0x32461b752243bba76ad56fe14f88d2d0bb224c68f1c598dd3a34ee3204ddc84";
+        let arg = json!({ "hash": hash2 }).to_string();
+        sign_hash(&arg, get_keypair()).unwrap();
+    }
+
+    #[test]
+    fn test_extract_hash_1() {
+        let hash2 = "0x32461b752243bba76ad56fe14f88d2d0bb224c68f1c598dd3a34ee3204ddc84";
+        let arg = json!({ "hash": hash2 }).to_string();
+        let valid_hash = hex::decode("032461b752243bba76ad56fe14f88d2d0bb224c68f1c598dd3a34ee3204ddc84").unwrap();
+        assert_eq!(valid_hash, extract_hash(&arg).unwrap());
+    }
+
+    #[test]
+    fn test_extract_hash_2() {
+        let hash3 = "0x2461b752243bba76ad56fe14f88d2d0bb224c68f1c598dd3a34ee3204ddc80";
+        let valid_hash = hex::decode("002461b752243bba76ad56fe14f88d2d0bb224c68f1c598dd3a34ee3204ddc80").unwrap();
+        let arg = json!({ "hash": hash3 }).to_string();
+        assert_eq!(valid_hash, extract_hash(&arg).unwrap());
+    }
+
+    #[test]
+    fn test_extract_hash_3() {
+        let hash = "32461b752243bba76ad56fe14f88d2d0bb224c68f1c598dd3a34ee3204ddc84";
+        let arg = json!({ "hash": hash }).to_string();
+        let valid_hash = hex::decode("032461b752243bba76ad56fe14f88d2d0bb224c68f1c598dd3a34ee3204ddc84").unwrap();
+        assert_eq!(valid_hash, extract_hash(&arg).unwrap());
+    }
+
+    #[test]
+    fn test_extract_hash_4() {
+        let hash = "qwerty";
+        let arg = json!({ "hash": hash }).to_string();
+        assert_eq!(true, extract_hash(&arg).is_err());
+    }
 }
