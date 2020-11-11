@@ -49,7 +49,7 @@ async fn test_create_dengine() {
     let callbacks = Box::new(TestCallbacks::new(Arc::clone(&browser)));
 
     let mut engine = DEngine::new(
-        "0:06db24d32c48980e3c7fc205340e70b81becf6f3174584b216fb1d1eb646de0d".to_string(),
+        "0:a9ba422827045012d1d5b881c8c8acea46bce3442a175171d4fd2f645e5f2bae".to_string(),
         None,
         "https://net.ton.dev",
         callbacks,

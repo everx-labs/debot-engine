@@ -40,7 +40,7 @@ where
     D: Deserializer<'de>
 {
     let s: String = Deserialize::deserialize(des)?;
-    u8::from_str_radix(s.trim_start_matches("0x"), 16).map_err(de::Error::custom)
+    u8::from_str_radix(&s, 10).map_err(de::Error::custom)
 }
 
 pub(super) fn str_hex_to_utf8(s: &str) -> Option<String> {

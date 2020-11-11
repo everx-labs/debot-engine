@@ -8,6 +8,7 @@ use std::collections::VecDeque;
 use ton_client::{ClientConfig, ClientContext};
 use ton_client::abi::{
     Abi,
+    AbiConfig,
     MessageSource,
     CallSet,
     DeploySet,
@@ -16,7 +17,7 @@ use ton_client::abi::{
     Signer,
     encode_message
 };
-use ton_client::crypto::KeyPair;
+use ton_client::crypto::{CryptoConfig, KeyPair};
 use ton_client::error::ClientError;
 use ton_client::processing::ParamsOfProcessMessage;
 use ton_client::tvm::ParamsOfRunTvm;
@@ -24,17 +25,32 @@ use ton_client::tvm::ParamsOfRunTvm;
 pub type TonClient = Arc<ClientContext>;
 type JsonValue = serde_json::Value;
 
+pub const HD_PATH: &str = "m/44'/396'/0'/0/0";
+pub const WORD_COUNT: u8 = 12;
+
 fn create_client(url: &str) -> Result<TonClient, String> {
-    let conf = ClientConfig {
-        abi: None,
-        crypto: None,
-        network: Some(ton_client::net::NetworkConfig {
+    let cli_conf = ClientConfig {
+        abi: AbiConfig::default(),
+        crypto: CryptoConfig {
+            mnemonic_dictionary: 1,
+            mnemonic_word_count: WORD_COUNT,
+            hdkey_derivation_path: HD_PATH.to_string(),
+            hdkey_compliant: true,
+        },
+        network: ton_client::net::NetworkConfig {
             server_address: url.to_owned(),
             ..Default::default()
-        }),
+        },
     };
-    let cli = ClientContext::new(Some(conf)).map_err(|e| format!("failed to create tonclient: {}", e))?;
+    let cli = ClientContext::new(cli_conf).map_err(|e| format!("failed to create tonclient: {}", e))?;
     Ok(Arc::new(cli))
+}
+
+fn load_abi(abi: &str) -> Result<Abi, String> {
+    Ok(Abi::Contract(
+        serde_json::from_str(abi)
+            .map_err(|e| format!("failed to parse abi: {}", e))?
+    ))
 }
 
 struct RunOutput {
@@ -91,12 +107,8 @@ impl DEngine {
         browser: Box<dyn BrowserCallbacks>
     ) -> Self {
         DEngine { 
-            abi: abi.map(|s| {
-                Abi::Serialized(serde_json::from_str(&s).unwrap())
-            })
-            .unwrap_or(
-                Abi::Serialized(serde_json::from_str(DEBOT_ABI).unwrap())
-            ),
+            abi: abi.map(|s| load_abi(&s))
+                .unwrap_or(load_abi(DEBOT_ABI)).unwrap(),
             addr,
             ton,
             state: String::new(),
@@ -488,7 +500,7 @@ impl DEngine {
             let abi_str = str_hex_to_utf8(
                 params["debotAbi"].as_str().unwrap()
             ).ok_or("cannot convert hex string to debot abi")?;
-            self.abi = Abi::Serialized(serde_json::from_str(&abi_str).unwrap());
+            self.abi = load_abi(&abi_str)?;
         }
         if options & OPTION_TARGET_ABI != 0 {
             self.target_abi = str_hex_to_utf8(
@@ -506,11 +518,10 @@ impl DEngine {
         let args: Option<JsonValue> = if act.misc != /*empty cell*/"te6ccgEBAQEAAgAAAA==" {
             Some(json!({ "misc": act.misc }).into())
         } else {
-            let empty_json = json!({});
-            let abi_json = if let Abi::Serialized(ref abi_json) = self.abi {
-                abi_json
+            let abi_json: serde_json::Value = if let Abi::Contract(ref abi_obj) = self.abi {
+                serde_json::from_str(&serde_json::to_string(&abi_obj).unwrap()).unwrap()
             } else {
-                &empty_json
+                json!({})
             };
             let functions = abi_json["functions"].as_array().unwrap();
             let func = functions.iter().find(|f| f["name"].as_str().unwrap() == act.name)
@@ -539,9 +550,7 @@ impl DEngine {
         let abi = self.target_abi.as_ref().ok_or(
             format!("target abi is undefined")
         )?;
-        let abi_obj = Abi::Serialized(
-            serde_json::from_str(abi).map_err(|e| format!("cannot parse target abi: {}", e))?
-        );
+        let abi_obj = load_abi(abi)?;
         Ok((addr, abi_obj))
     }
 
@@ -604,28 +613,21 @@ impl DEngine {
     ) -> Result<Option<JsonValue>, String > {
         let addr = load_ton_address(dest)?;
 
-        let msg = ton_client::abi::encode_message(
-            self.ton.clone(),
-            ParamsOfEncodeMessage {
-                abi: abi.clone(),
-                address: Some(addr),
-                deploy_set: state.and_then(|s| DeploySet::some_with_tvc(s.to_string())),
-                call_set: if args.is_none() { 
-                    CallSet::some_with_function(func)
-                } else { 
-                    CallSet::some_with_function_and_input(func, args.unwrap()) 
-                },
-                signer: match keys { 
-                    Some(k) => Signer::Keys{keys: k},
-                    None => Signer::None,
-                },
-                processing_try_index: None,
-            }
-        ).await
-        .map_err(|e| {
-            error!("failed to create message: {}", e);
-            format!("failed to create message")
-        })?;
+        let call_params = ParamsOfEncodeMessage {
+            abi: abi.clone(),
+            address: Some(addr),
+            deploy_set: state.and_then(|s| DeploySet::some_with_tvc(s.to_string())),
+            call_set: if args.is_none() { 
+                CallSet::some_with_function(func)
+            } else { 
+                CallSet::some_with_function_and_input(func, args.unwrap()) 
+            },
+            signer: match keys { 
+                Some(k) => Signer::Keys{keys: k},
+                None => Signer::None,
+            },
+            processing_try_index: None,
+        };
 
         //let msg = pack_state(msg, state)?;
         let callback = move |event| {
@@ -633,14 +635,11 @@ impl DEngine {
             async move {}
         };
 
-        self.browser.log(format!("sending message {}", msg.message_id));
+        //self.browser.log(format!("sending message {}", msg.message_id));
         match ton_client::processing::process_message(
             self.ton.clone(),
             ParamsOfProcessMessage {
-                message: MessageSource::Encoded {
-                    message: msg.message.clone(),
-                    abi: Some(abi),
-                },
+                message_encode_params: call_params,
                 send_events: true,
             },
             callback,
