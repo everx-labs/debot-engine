@@ -83,15 +83,15 @@ impl DEngine {
     pub fn start(&mut self) -> Result<(), String> {
         self.state_machine = self.fetch_state()?;
 
-        self.switch_state(STATE_ZERO)
+        self.switch_state(STATE_ZERO, true)
     }
 
     pub fn execute_action(&mut self, act: &DAction) -> Result<(), String> {
         self.handle_action(&act)
-            .and_then(|_| self.switch_state(act.to))
+            .and_then(|_| self.switch_state(act.to, false))
             .or_else (|e| {
                 self.browser.log(format!("Action failed: {}. Return to previous state.\n", e));
-                self.switch_state(self.prev_state)
+                self.switch_state(self.prev_state, false)
             })
     }
     
@@ -148,7 +148,7 @@ impl DEngine {
                 let debot_action: DAction = serde_json::from_value(invoke_args["action"].clone()).unwrap();
                 debug!("invoke debot: {}, action name: {}", &debot_addr, debot_action.name);
                 self.browser.invoke_debot(debot_addr, debot_action)?;
-                
+                self.switch_state(self.curr_state, true)?;
                 Ok(None)
             },
             AcType::Print => {
@@ -199,7 +199,7 @@ impl DEngine {
         }
     }
 
-    fn switch_state(&mut self, mut state_to: u8) -> Result<(), String> {
+    fn switch_state(&mut self, mut state_to: u8, force: bool) -> Result<(), String> {
         debug!("switching to {}", state_to);
         if state_to == STATE_CURRENT {
             state_to = self.curr_state;
@@ -209,7 +209,7 @@ impl DEngine {
         }
         if state_to == STATE_EXIT {
             self.browser.switch(STATE_EXIT);
-        } else if state_to != self.curr_state {        
+        } else if state_to != self.curr_state || force {        
             let mut instant_switch = true;
             self.prev_state = self.curr_state;
             self.curr_state = state_to;
