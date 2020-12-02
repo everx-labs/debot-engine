@@ -69,6 +69,7 @@ impl DEngine {
 
     pub fn fetch(&mut self) -> Result<(), String> {
         self.state_machine = self.fetch_state()?;
+        self.prev_state = STATE_EXIT;
         Ok(())
     }
 
@@ -88,7 +89,7 @@ impl DEngine {
 
     pub fn execute_action(&mut self, act: &DAction) -> Result<(), String> {
         self.handle_action(&act)
-            .and_then(|_| self.switch_state(act.to, false))
+            .and_then(|_| self.switch_state(act.to, true))
             .or_else (|e| {
                 self.browser.log(format!("Action failed: {}. Return to previous state.\n", e));
                 self.switch_state(self.prev_state, false)
@@ -148,7 +149,6 @@ impl DEngine {
                 let debot_action: DAction = serde_json::from_value(invoke_args["action"].clone()).unwrap();
                 debug!("invoke debot: {}, action name: {}", &debot_addr, debot_action.name);
                 self.browser.invoke_debot(debot_addr, debot_action)?;
-                self.switch_state(self.curr_state, true)?;
                 Ok(None)
             },
             AcType::Print => {
