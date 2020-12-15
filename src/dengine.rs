@@ -88,12 +88,23 @@ impl DEngine {
     }
 
     pub fn execute_action(&mut self, act: &DAction) -> Result<(), String> {
-        self.handle_action(&act)
-            .and_then(|_| self.switch_state(act.to, true))
-            .or_else (|e| {
-                self.browser.log(format!("Action failed: {}. Return to previous state.\n", e));
+        match self.handle_action(&act) {
+            Ok(acts) => {
+                if let Some(acts) = acts {
+                    for a in acts {
+                        if a.is_engine_call() {
+                            self.handle_action(&a)?;
+                        }
+                    }
+                }
+                self.switch_state(act.to, act.is_invoke())
+            },
+            Err(e) => {
+                self.browser
+                    .log(format!("Action failed: {}. Return to previous state.\n", e));
                 self.switch_state(self.prev_state, false)
-            })
+            }
+        }
     }
     
     fn handle_action(
