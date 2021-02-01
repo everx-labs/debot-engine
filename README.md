@@ -1,19 +1,8 @@
 # DEngine
 
+> ⚠️ This repository is no longer supported, please consider using DEngine from [TON-SDK](https://github.com/tonlabs/TON-SDK/tree/master/ton_client/src/debot) instead.
+
 DEngine is a rust library that implements debot engine and allows to run debot smart contracts.
-
-## How to build
-
-    cargo build [--release]
-
-## How to use
-
-Add to your Cargo.toml:
-
-```toml
-[dependencies]
-debot-engine = { git = 'https://github.com/tonlabs/debot-engine.git' }
-```
 
 ## Example
 
